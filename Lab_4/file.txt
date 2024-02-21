@@ -1,0 +1,1950 @@
+Advanced Monitoring with the Streaming Listener
+We already touched on some of the high-level monitoring tools in Structured Streaming. With a
+bit of glue logic, you can use the status and queryProgress APIs to output monitoring events into
+your organization’s monitoring platform of choice (e.g., a log aggregation system or Prometheus
+dashboard). Beyond these approaches, there is also a lower-level but more powerful way to
+observe an application’s execution: the StreamingQueryListener class.
+The StreamingQueryListener class will allow you to receive asynchronous updates from the
+streaming query in order to automatically output this information to other systems and
+implement robust monitoring and alerting mechanisms. You start by developing your own object
+to extend StreamingQueryListener, then attach it to a running SparkSession. Once you attach
+your custom listener with sparkSession.streams.addListener(), your class will receive
+notifications when a query is started or stopped, or progress is made on an active query. Here’s a
+simple example of a listener from the Structured Streaming documentation:
+val spark: SparkSession = ...
+spark.streams.addListener(new StreamingQueryListener() {
+override def onQueryStarted(queryStarted: QueryStartedEvent): Unit = {
+println("Query started: " + queryStarted.id)
+}
+override def onQueryTerminated(
+queryTerminated: QueryTerminatedEvent): Unit = {
+println("Query terminated: " + queryTerminated.id)
+}
+override def onQueryProgress(queryProgress: QueryProgressEvent): Unit = {
+println("Query made progress: " + queryProgress.progress)
+}
+})
+Streaming listeners allow you to process each progress update or status change using custom
+code and pass it to external systems. For example, the following code for a
+StreamingQueryListener that will forward all query progress information to Kafka. You’ll
+have to parse this JSON string once you read data from Kafka in order to access the actual
+metrics:
+class KafkaMetrics(servers: String) extends StreamingQueryListener {
+val kafkaProperties = new Properties()
+kafkaProperties.put(
+"bootstrap.servers",
+servers)
+kafkaProperties.put(
+"key.serializer",
+"kafkashaded.org.apache.kafka.common.serialization.StringSerializer")
+kafkaProperties.put(
+"value.serializer",
+"kafkashaded.org.apache.kafka.common.serialization.StringSerializer")
+val producer = new KafkaProducer[String, String](kafkaProperties)
+import org.apache.spark.sql.streaming.StreamingQueryListener
+import org.apache.kafka.clients.producer.KafkaProducer
+override def onQueryProgress(event:
+StreamingQueryListener.QueryProgressEvent): Unit = {
+producer.send(new ProducerRecord("streaming-metrics",
+event.progress.json))
+}
+override def onQueryStarted(event:
+StreamingQueryListener.QueryStartedEvent): Unit = {}
+override def onQueryTerminated(event:
+StreamingQueryListener.QueryTerminatedEvent): Unit = {}
+}
+Using the StreamingQueryListener interface, you can even monitor Structured Streaming
+applications on one cluster by running a Structured Streaming application on that same (or
+another) cluster. You could also manage multiple streams in this way.
+Conclusion
+In this chapter, we covered the main tools needed to run Structured Streaming in production:
+checkpoints for fault tolerance and various monitoring APIs that let you observe how your
+application is running. Lucky for you, if you’re running Spark in production already, many of the
+concepts and tools are similar, so you should be able to reuse a lot of your existing knowledge.
+Be sure to check Part IV to see some other helpful tools for monitoring Spark Applications.
+Part VI. Advanced Analytics and
+Machine Learning
+Chapter 24. Advanced Analytics and
+Machine Learning Overview
+Thus far, we have covered fairly general data flow APIs. This part of the book will dive deeper
+into some of the more specific advanced analytics APIs available in Spark. Beyond large-scale
+SQL analysis and streaming, Spark also provides support for statistics, machine learning, and
+graph analytics. These encompass a set of workloads that we will refer to as advanced analytics.
+This part of the book will cover advanced analytics tools in Spark, including:
+Preprocessing your data (cleaning data and feature engineering)
+Supervised learning
+Recommendation learning
+Unsupervised engines
+Graph analytics
+Deep learning
+This chapter offers a basic overview of advanced analytics, some example use cases, and a basic
+advanced analytics workflow. Then we’ll cover the analytics tools just listed and teach you how
+to apply them.
+WARNING
+This book is not intended to teach you everything you need to know about machine learning from
+scratch. We won’t go into strict mathematical definitions and formulations—not for lack of importance
+but simply because it’s too much information to include. This part of the book is not an algorithm
+guide that will teach you the mathematical underpinnings of every available algorithm nor the in-depth
+implementation strategies used. The chapters included here serve as a guide for users, with the purpose
+of outlining what you need to know to use Spark’s advanced analytics APIs.
+A Short Primer on Advanced Analytics
+Advanced analytics refers to a variety of techniques aimed at solving the core problem of
+deriving insights and making predictions or recommendations based on data. The best ontology
+for machine learning is structured based on the task that you’d like to perform. The most
+common tasks include:
+Supervised learning, including classification and regression, where the goal is to predict
+a label for each data point based on various features.
+Recommendation engines to suggest products to users based on behavior.
+Unsupervised learning, including clustering, anomaly detection, and topic modeling,
+where the goal is to discover structure in the data.
+Graph analytics tasks such as searching for patterns in a social network.
+Before discussing Spark’s APIs in detail, let’s review each of these tasks along with some
+common machine learning and advanced analytics use cases. While we have certainly tried to
+make this introduction as accessible as possible, at times you may need to consult other resources
+in order to fully understand the material. O’Reilly should we link to or mention any specific
+ones? Additionally, we will cite the following books throughout the next few chapters because
+they are great resources for learning more about the individual analytics (and, as a bonus, they
+are freely available on the web):
+An Introduction to Statistical Learning by Gareth James, Daniela Witten, Trevor Hastie,
+and Robert Tibshirani. We refer to this book as “ISL.”
+Elements of Statistical Learning by Trevor Hastie, Robert Tibshirani, and Jerome
+Friedman. We refer to this book as “ESL.”
+Deep Learning by Ian Goodfellow, Yoshua Bengio, and Aaron Courville. We refer to
+this book as “DLB.”
+Supervised Learning
+Supervised learning is probably the most common type of machine learning. The goal is simple:
+using historical data that already has labels (often called the dependent variables), train a model
+to predict the values of those labels based on various features of the data points. One example
+would be to predict a person’s income (the dependent variable) based on age (a feature). This
+training process usually proceeds through an iterative optimization algorithm such as gradient
+descent. The training algorithm starts with a basic model and gradually improves it by adjusting
+various internal parameters (coefficients) during each training iteration. The result of this process
+is a trained model that you can use to make predictions on new data. There are a number of
+different tasks we’ll need to complete as part of the process of training and making predictions,
+such as measuring the success of trained models before using them in the field, but the
+fundamental principle is simple: train on historical data, ensure that it generalizes to data we
+didn’t train on, and then make predictions on new data.
+We can further organize supervised learning based on the type of variable we’re looking to
+predict. We’ll get to that next.
+Classification
+One common type of supervised learning is classification. Classification is the act of training an
+algorithm to predict a dependent variable that is categorical (belonging to a discrete, finite set of
+values). The most common case is binary classification, where our resulting model will make a
+prediction that a given item belongs to one of two groups. The canonical example is classifying
+email spam. Using a set of historical emails that are organized into groups of spam emails and
+not spam emails, we train an algorithm to analyze the words in, and any number of properties of,
+the historical emails and make predictions about them. Once we are satisfied with the algorithm’s
+performance, we use that model to make predictions about future emails the model has never
+seen before.
+When we classify items into more than just two categories, we call this multiclass classification.
+For example, we may have four different categories of email (as opposed to the two categories in
+the previous paragraph): spam, personal, work related, and other. There are many use cases for
+classification, including:
+Predicting disease
+A doctor or hospital might have a historical dataset of behavioral and physiological attributes
+of a set of patients. They could use this dataset to train a model on this historical data (and
+evaluate its success and ethical implications before applying it) and then leverage it to predict
+whether or not a patient has heart disease or not. This is an example of binary classification
+(healthy heart, unhealthy heart) or multiclass classification (healthly heart, or one of several
+different diseases).
+Classifying images
+There are a number of applications from companies like Apple, Google, or Facebook that can
+predict who is in a given photo by running a classification model that has been trained on
+historical images of people in your past photos. Another common use case is to classify
+images or label the objects in images.
+Predicting customer churn
+A more business-oriented use case might be predicting customer churn—that is, which
+customers are likely to stop using a service. You can do this by training a binary classifier on
+past customers that have churned (and not churned) and using it to try and predict whether or
+not current customers will churn.
+Buy or won’t buy
+Companies often want to predict whether visitors of their website will purchase a given
+product. They might use information about users’ browsing pattern or attributes such as
+location in order to drive this prediction.
+There are many more use cases for classification beyond these examples. We will introduce more
+use cases, as well as Spark’s classification APIs, in Chapter 26.
+Regression
+In classification, our dependent variable is a set of discrete values. In regression, we instead try
+to predict a continuous variable (a real number). In simplest terms, rather than predicting a
+category, we want to predict a value on a number line. The rest of the process is largely the same,
+which is why they’re both forms of supervised learning. We will train on historical data to make
+predictions about data we have never seen. Here are some typical examples:
+Predicting sales
+A store may want to predict total product sales on given data using historical sales data.
+There are a number of potential input variables, but a simple example might be using last
+week’s sales data to predict the next day’s data.
+Predicting height
+Based on the heights of two individuals, we might want to predict the heights of their
+potential children.
+Predicting the number of viewers of a show
+A media company like Netflix might try to predict how many of their subscribers will watch
+a particular show.
+We will introduce more use cases, as well as Spark’s methods for regression, in Chapter 27.
+Recommendation
+Recommendation is one of the most intuitive applications of advanced analytics. By studying
+people’s explicit preferences (through ratings) or implicit ones (through observed behavior) for
+various products or items, an algorithm can make recommendations on what a user may like by
+drawing similarities between the users or items. By looking at these similarities, the algorithm
+makes recommendations to users based on what similar users liked, or what other products
+resemble the ones the user already purchased. Recommendation is a common use case for Spark
+and well suited to big data. Here are some example use cases:
+Movie recommendations
+Netflix uses Spark, although not necessarily its built-in libraries, to make large-scale movie
+recommendations to its users. It does this by studying what movies users watch and do not
+watch in the Netflix application. In addition, Netflix likely takes into consideration how
+similar a given user’s ratings are to other users’.
+Product recommendations
+Amazon uses product recommendations as one of its main tools to increase sales. For
+instance, based on the items in our shopping cart, Amazon may recommend other items that
+were added to similar shopping carts in the past. Likewise, on every product page, Amazon
+shows similar products purchased by other users.
+We will introduce more recommendation use cases, as well as Spark’s methods for generating
+recommendations, in Chapter 28.
+Unsupervised Learning
+Unsupervised learning is the act of trying to find patterns or discover the underlying structure in
+a given set of data. This differs from supervised learning because there is no dependent variable
+(label) to predict.
+Some example use cases for unsupervised learning include:
+Anomaly detection
+Given some standard event type often occuring over time, we might want to report when a
+nonstandard type of event occurs. For example, a security officer might want to receive
+notifications when a strange object (think vehicle, skater, or bicyclist) is observed on a
+pathway.
+User segmentation
+Given a set of user behaviors, we might want to better understand what attributes certain
+users share with other users. For instance, a gaming company might cluster users based on
+properties like the number of hours played in a given game. The algorithm might reveal that
+casual players have very different behavior than hardcore gamers, for example, and allow the
+company to offer different recommendations or rewards to each player.
+Topic modeling
+Given a set of documents, we might analyze the different words contained therein to see if
+there is some underlying relation between them. For example, given a number of web pages
+on data analytics, a topic modeling algorithm can cluster them into pages about machine
+learning, SQL, streaming, and so on based on groups of words that are more common in one
+topic than in others.
+Intuitively, it is easy to see how segmenting customers could help a platform cater better to each
+set of users. However, it may be hard to discover whether or not this set of user segments is
+“correct”. For this reason, it can be difficult to determine whether a particular model is good or
+not. We will discuss unsupervised learning in detail in Chapter 29.
+Graph Analytics
+While less common than classification and regression, graph analytics is a powerful tool.
+Fundamentally, graph analytics is the study of structures in which we specify vertices (which are
+objects) and edges (which represent the relationships between those objects). For example, the
+vertices might represent people and products, and edges might represent a purchase. By looking
+at the properties of vertices and edges, we can better understand the connections between them
+and the overall structure of the graph. Since graphs are all about relationships, anything that
+specifies a relationship is a great use case for graph analytics. Some examples include:
+Fraud prediction
+Capital One uses Spark’s graph analytics capabilities to better understand fraud networks. By
+using historical fraudulent information (like phone numbers, addresses, or names) they
+discover fraudulent credit requests or transactions. For instance, any user accounts within two
+hops of a fraudulent phone number might be considered suspicious.
+Anomaly detection
+By looking at how networks of individuals connect with one another, outliers and anomalies
+can be flagged for manual analysis. For instance, if typically in our data each vertex has ten
+edges associated with it and a given vertex only has one edge, that might be worth
+investigating as something strange.
+Classification
+Given some facts about certain vertices in a network, you can classify other vertices
+according to their connection to the original node. For instance, if a certain individual is
+labeled as an influencer in a social network, we could classify other individuals with similar
+network structures as influencers.
+Recommendation
+Google’s original web recommendation algorithm, PageRank, is a graph algorithm that
+analyzes website relationships in order to rank the importance of web pages. For example, a
+web page that has a lot of links to it is ranked as more important than one with no links to it.
+We’ll discuss more examples of graph analytics in Chapter 30.
+The Advanced Analytics Process
+You should have a firm grasp of some fundamental use cases for machine learning and advanced
+analytics. However, finding a use case is only a small part of the actual advanced analytics
+process. There is a lot of work in preparing your data for analysis, testing different ways of
+modeling it, and evaluating these models. This section will provide structure to the overall
+anaytics process and the steps we have to take to not just perform one of the tasks just outlined,
+but actually evaluate success objectively in order to understand whether or not we should apply
+our model to the real world (Figure 24-1).
+Figure 24-1. The machine learning workflow
+The overall process involves, the following steps (with some variation):
+1. Gathering and collecting the relevant data for your task.
+2. Cleaning and inspecting the data to better understand it.
+3. Performing feature engineering to allow the algorithm to leverage the data in a suitable
+form (e.g., converting the data to numerical vectors).
+4. Using a portion of this data as a training set to train one or more algorithms to generate
+some candidate models.
+5. Evaluating and comparing models against your success criteria by objectively
+measuring results on a subset of the same data that was not used for training. This
+allows you to better understand how your model may perform in the wild.
+6. Leveraging the insights from the above process and/or using the model to make
+predictions, detect anomalies, or solve more general business challenges.
+These steps won’t be the same for every advanced analytics task. However, this workflow does
+serve as a general framework for what you’re going to need to be successful with advanced
+analytics. Just as we did with the various advanced analytics tasks earlier in the chapter, let’s
+break down the process to better understand the overall objective of each step.
+Data collection
+Naturally it’s hard to create a training set without first collecting data. Typically this means at
+least gathering the datasets you’ll want to leverage to train your algorithm. Spark is an excellent
+tool for this because of its ability to speak to a variety of data sources and work with data big and
+small.
+Data cleaning
+After you’ve gathered the proper data, you’re going to need to clean and inspect it. This is
+typically done as part of a process called exploratory data analysis, or EDA. EDA generally
+means using interactive queries and visualization methods in order to better understand
+distributions, correlations, and other details in your data. During this process you may notice you
+need to remove some values that may have been misrecorded upstream or that other values may
+be missing. Whatever the case, it’s always good to know what is in your data to avoid mistakes
+down the road. The multitude of Spark functions in the structured APIs will provide a simple
+way to clean and report on your data.
+Feature engineering
+Now that you collected and cleaned your dataset, it’s time to convert it to a form suitable for
+machine learning algorithms, which generally means numerical features. Proper feature
+engineering can often make or break a machine learning application, so this is one task you’ll
+want to do carefully. The process of feature engineering includes a variety of tasks, such as
+normalizing data, adding variables to represent the interactions of other variables, manipulating
+categorical variables, and converting them to the proper format to be input into our machine
+learning model. In MLlib, Spark’s machine learning library, all variables will usually have to be
+input as vectors of doubles (regardless of what they actually represent). We cover the process of
+feature engineering in great depth in Chapter 25. As you will see in that chapter, Spark provides
+the essentials you’ll need to manipulate your data using a variety of machine learning statistical
+techniques.
+NOTE
+The following few steps (training models, model tuning, and evaluation) are not relevant to all use
+cases. This is a general workflow that may vary significantly based on the end objective you would
+like to achieve.
+Training models
+At this point in the process we have a dataset of historical information (e.g., spam or not spam
+emails) and a task we would like to complete (e.g., classifying spam emails). Next, we will want
+to train a model to predict the correct output, given some input. During the training process, the
+parameters inside of the model will change according to how well the model performed on the
+input data. For instance, to classify spam emails, our algorithm will likely find that certain words
+are better predictors of spam than others and therefore weight the parameters associated with
+those words higher. In the end, the trained model will find that certain words should have more
+influence (because of their consistent association with spam emails) than others. The output of
+the training process is what we call a model. Models can then be used to gain insights or to make
+future predictions. To make predictions, you will give the model an input and it will produce an
+output based on a mathematical manipulation of these inputs. Using the classification example,
+given the properties of an email, it will predict whether that email is spam or not by comparing to
+the historical spam and not spam emails that it was trained on.
+However, just training a model isn’t the objective—we want to leverage our model to produce
+insights. Thus, we must answer the question: how do we know our model is any good at what it’s
+supposed to do? That’s where model tuning and evaluation come in.
+Model tuning and evaluation
+You likely noticed earlier that we mentioned that you should split your data into multiple
+portions and use only one for training. This is an essential step in the machine learning process
+because when you build an advanced analytics model you want that model to generalize to data it
+has not seen before. Splitting our dataset into multiple portions allows us to objectively test the
+effectiveness of the trained model against a set of data that it has never seen before. The
+objective is to see if your model understands something fundamental about this data process or
+whether or not it just noticed the things particular to only the training set (sometimes called
+overfitting). That’s why it is called a test set. In the process of training models, we also might
+take another, separate subset of data and treat that as another type of test set, called a validation
+set, in order to try out different hyperparameters (parameters that affect the training process) and
+compare different variations of the same model without overfitting to the test set.
+WARNING
+Following proper training, validation, and test set best practices is essential to successfully using
+machine learning. It’s easy to end up overfitting (training a model that does not generalize well to new
+data) if we do not properly isolate these sets of data. We cannot cover this problem in depth in this
+book, but almost any machine learning book will cover this topic.
+To continue with the classification example we referenced previously, we have three sets of data:
+a training set for training models, a validation set for testing different variations of the models
+that we’re training, and lastly, a test set we will use for the final evaluation of our different model
+variations to see which one performed the best.
+Leveraging the model and/or insights
+After running the model through the training process and ending up with a well-performing
+model, you are now ready to use it! Taking your model to production can be a significant
+challenge in and of itself. We will discuss some tactics later on in this chapter.
+Spark’s Advanced Analytics Toolkit
+The previous overview is just an example workflow and doesn’t encompass all use cases or
+potential workflows. In addition, you probably noticed that we did not discuss Spark almost at
+all. This section will discuss Spark’s advanced analytics capabilities. Spark includes several core
+packages and many external packages for performing advanced analytics. The primary package
+is MLlib, which provides an interface for building machine learning pipelines.
+What Is MLlib?
+MLlib is a package, built on and included in Spark, that provides interfaces for gathering and
+cleaning data, feature engineering and feature selection, training and tuning large-scale
+supervised and unsupervised machine learning models, and using those models in production.
+WARNING
+MLlib actually consists of two packages that leverage different core data structures. The package
+org.apache.spark.ml includes an interface for use with DataFrames. This package also offers a
+high-level interface for building machine learning pipelines that help standardize the way in which you
+perform the preceding steps. The lower-level package, org.apache.spark.mllib, includes interfaces
+for Spark’s low-level RDD APIs. This book will focus exclusively on the DataFrame API. The RDD
+API is the lower-level interface, which is in maintenance mode (meaning it will only receive bug fixes,
+not new features) at this time. It has also been covered fairly extensively in older books on Spark and
+is therefore omitted here.
+When and why should you use MLlib (versus scikit-learn, TensorFlow, or foo
+package)
+At a high level, MLlib might sound like a lot of other machine learning packages you’ve
+probably heard of, such as scikit-learn for Python or the variety of R packages for performing
+similar tasks. So why should you bother with MLlib at all? There are numerous tools for
+performing machine learning on a single machine, and while there are several great options to
+choose from, these single machine tools do have their limits either in terms of the size of data
+you can train on or the processing time. This means single-machine tools are usually
+complementary to MLlib. When you hit those scalability issues, take advantage of Spark’s
+abilities.
+There are two key use cases where you want to leverage Spark’s ability to scale. First, you want
+to leverage Spark for preprocessing and feature generation to reduce the amount of time it might
+take to produce training and test sets from a large amount of data. Then you might leverage
+single-machine learning libraries to train on those given data sets. Second, when your input data
+or model size become too difficult or inconvenient to put on one machine, use Spark to do the
+heavy lifting. Spark makes distributed machine learning very simple.
+An important caveat to all of this is that while training and data preparation are made simple,
+there are still some complexities you will need to keep in mind, especially when it comes to
+deploying a trained model. For example, Spark does not provide a built-in way to serve lowlatency predictions from a model, so you may want to export the model to another serving
+system or a custom application to do that. MLlib is generally designed to allow inspecting and
+exporting models to other tools where possible.
+High-Level MLlib Concepts
+In MLlib there are several fundamental “structural” types: transformers, estimators, evaluators,
+and pipelines. By structural, we mean you will think in terms of these types when you define an
+end-to-end machine learning pipeline. They’ll provide the common language for defining what
+belongs in what part of the pipeline. Figure 24-2 illustrates the overall workflow that you will
+follow when developing machine learning models in Spark.
+Figure 24-2. The machine learning workflow, in Spark
+Transformers are functions that convert raw data in some way. This might be to create a new
+interaction variable (from two other variables), normalize a column, or simply change an
+Integer into a Double type to be input into a model. An example of a transformer is one that
+converts string categorical variables into numerical values that can be used in MLlib.
+Transformers are primarily used in preprocessing and feature engineering. Transformers take a
+DataFrame as input and produce a new DataFrame as output, as illustrated in Figure 24-3.
+Figure 24-3. A standard transformer
+Estimators are one of two kinds of things. First, estimators can be a kind of transformer that is
+initialized with data. For instance, to normalize numerical data we’ll need to initialize our
+transformation with some information about the current values in the column we would like to
+normalize. This requires two passes over our data—the initial pass generates the initialization
+values and the second actually applies the generated function over the data. In the Spark’s
+nomenclature, algorithms that allow users to train a model from data are also referred to as
+estimators.
+An evaluator allows us to see how a given model performs according to criteria we specify like a
+receiver operating characteristic (ROC) curve. After we use an evaluator to select the best model
+from the ones we tested, we can then use that model to make predictions.
+From a high level we can specify each of the transformations, estimations, and evaluations one
+by one, but it is often easier to specify our steps as stages in a pipeline. This pipeline is similar to
+scikit-learn’s pipeline concept.
+Low-level data types
+In addition to the structural types for building pipelines, there are also several lower-level data
+types you may need to work with in MLlib (Vector being the most common). Whenever we pass
+a set of features into a machine learning model, we must do it as a vector that consists of
+Doubles. This vector can be either sparse (where most of the elements are zero) or dense (where
+there are many unique values). Vectors are created in different ways. To create a dense vector,
+we can specify an array of all the values. To create a sparse vector, we can specify the total size
+and the indices and values of the non-zero elements. Sparse is the best format, as you might have
+guessed, when the majority of values are zero as this is a more compressed representation. Here
+is an example of how to manually create a Vector:
+// in Scala
+import org.apache.spark.ml.linalg.Vectors
+val denseVec = Vectors.dense(1.0, 2.0, 3.0)
+val size = 3
+val idx = Array(1,2) // locations of non-zero elements in vector
+val values = Array(2.0,3.0)
+val sparseVec = Vectors.sparse(size, idx, values)
+sparseVec.toDense
+denseVec.toSparse
+# in Python
+from pyspark.ml.linalg import Vectors
+denseVec = Vectors.dense(1.0, 2.0, 3.0)
+size = 3
+idx = [1, 2] # locations of non-zero elements in vector
+values = [2.0, 3.0]
+sparseVec = Vectors.sparse(size, idx, values)
+WARNING
+Confusingly, there are similar datatypes that refer to ones that can be used in DataFrames and others
+that can only be used in RDDs. The RDD implementations fall under the mllib package while the
+DataFrame implementations fall under ml.
+MLlib in Action
+Now that we have described some of the core pieces you can expect to come across, let’s create a
+simple pipeline to demonstrate each of the components. We’ll use a small synthetic dataset that
+will help illustrate our point. Let’s read the data in and see a sample before talking about it
+further:
+// in Scala
+var df = spark.read.json("/data/simple-ml")
+df.orderBy("value2").show()
+# in Python
+df = spark.read.json("/data/simple-ml")
+df.orderBy("value2").show()
+Here’s a sample of the data:
++-----+----+------+------------------+
+|color| lab|value1| value2|
++-----+----+------+------------------+
+|green|good| 1|14.386294994851129|
+...
+| red| bad| 16|14.386294994851129|
+|green|good| 12|14.386294994851129|
++-----+----+------+------------------+
+This dataset consists of a categorical label with two values (good or bad), a categorical variable
+(color), and two numerical variables. While the data is synthetic, let’s imagine that this dataset
+represents a company’s customer health. The “color” column represents some categorical health
+rating made by a customer service representative. The “lab” column represents the true customer
+health. The other two values are some numerical measures of activity within an application (e.g.,
+minutes spent on site and purchases). Suppose that we want to train a classification model where
+we hope to predict a binary variable—the label—from the other values.
+TIP
+Apart from JSON, there are some specific data formats commonly used for supervised learning,
+including LIBSVM. These formats have real valued labels and sparse input data. Spark can read and
+write for these formats using its data source API. Here’s an example of how to read in data from a
+libsvm file using that Data Source API.
+spark.read.format("libsvm").load(
+"/data/sample_libsvm_data.txt")
+For more information on LIBSVM, see the documentation.
+Feature Engineering with Transformers
+As already mentioned, transformers help us manipulate our current columns in one way or
+another. Manipulating these columns is often in pursuit of building features (that we will input
+into our model). Transformers exist to either cut down the number of features, add more features,
+manipulate current ones, or simply to help us format our data correctly. Transformers add new
+columns to DataFrames.
+When we use MLlib, all inputs to machine learning algorithms (with several exceptions
+discussed in later chapters) in Spark must consist of type Double (for labels) and
+Vector[Double] (for features). The current dataset does not meet that requirement and therefore
+we need to transform it to the proper format.
+To achieve this in our example, we are going to specify an RFormula. This is a declarative
+language for specifying machine learning transformations and is simple to use once you
+understand the syntax. RFormula supports a limited subset of the R operators that in practice
+work quite well for simple models and manipulations (we demonstrate the manual approach to
+this problem in Chapter 25). The basic RFormula operators are:
+~
+Separate target and terms
++
+Concat terms; “+ 0” means removing the intercept (this means that the y-intercept of the line
+that we will fit will be 0)
+-
+Remove a term; “- 1” means removing the intercept (this means that the y-intercept of the
+line that we will fit will be 0—yes, this does the same thing as “+ 0”
+:
+Interaction (multiplication for numeric values, or binarized categorical values)
+.
+All columns except the target/dependent variable
+In order to specify transformations with this syntax, we need to import the relevant class. Then
+we go through the process of defining our formula. In this case we want to use all available
+variables (the .) and also add in the interactions between value1 and color and value2 and
+color, treating those as new features:
+// in Scala
+import org.apache.spark.ml.feature.RFormula
+val supervised = new RFormula()
+.setFormula("lab ~ . + color:value1 + color:value2")
+# in Python
+from pyspark.ml.feature import RFormula
+supervised = RFormula(formula="lab ~ . + color:value1 + color:value2")
+At this point, we have declaratively specified how we would like to change our data into what we
+will train our model on. The next step is to fit the RFormula transformer to the data to let it
+discover the possible values of each column. Not all transformers have this requirement but
+because RFormula will automatically handle categorical variables for us, it needs to determine
+which columns are categorical and which are not, as well as what the distinct values of the
+categorical columns are. For this reason, we have to call the fit method. Once we call fit, it
+returns a “trained” version of our transformer we can then use to actually transform our data.
+NOTE
+We’re using the RFormula transformer because it makes performing several transformations extremely
+easy to do. In Chapter 25, we’ll show other ways to specify a similar set of transformations and outline
+the component parts of the RFormula when we cover the specific transformers in MLlib.
+Now that we covered those details, let’s continue on and prepare our DataFrame:
+// in Scala
+val fittedRF = supervised.fit(df)
+val preparedDF = fittedRF.transform(df)
+preparedDF.show()
+# in Python
+fittedRF = supervised.fit(df)
+preparedDF = fittedRF.transform(df)
+preparedDF.show()
+Here’s the output from the training and transformation process:
++-----+----+------+------------------+--------------------+-----+
+|color| lab|value1| value2| features|label|
++-----+----+------+------------------+--------------------+-----+
+|green|good| 1|14.386294994851129|(10,[1,2,3,5,8],[...| 1.0|
+...
+| red| bad| 2|14.386294994851129|(10,[0,2,3,4,7],[...| 0.0|
++-----+----+------+------------------+--------------------+-----+
+In the output we can see the result of our transformation—a column called features that has our
+previously raw data. What’s happening behind the scenes is actually pretty simple. RFormula
+inspects our data during the fit call and outputs an object that will transform our data according
+to the specified formula, which is called an RFormulaModel. This “trained” transformer always
+has the word Model in the type signature. When we use this transformer, Spark automatically
+converts our categorical variable to Doubles so that we can input it into a (yet to be specified)
+machine learning model. In particular, it assigns a numerical value to each possible color
+category, creates additional features for the interaction variables between colors and
+value1/value2, and puts them all into a single vector. We then call transform on that object in
+order to transform our input data into the expected output data.
+Thus far you (pre)processed the data and added some features along the way. Now it is time to
+actually train a model (or a set of models) on this dataset. In order to do this, you first need to
+prepare a test set for evaluation.
+TIP
+Having a good test set is probably the most important thing you can do to ensure you train a model you
+can actually use in the real world (in a dependable way). Not creating a representative test set or using
+your test set for hyperparameter tuning are surefire ways to create a model that does not perform well
+in real-world scenarios. Don’t skip creating a test set—it’s a requirement to know how well your
+model actually does!
+Let’s create a simple test set based off a random split of the data now (we’ll be using this test set
+throughout the remainder of the chapter):
+// in Scala
+val Array(train, test) = preparedDF.randomSplit(Array(0.7, 0.3))
+# in Python
+train, test = preparedDF.randomSplit([0.7, 0.3])
+Estimators
+Now that we have transformed our data into the correct format and created some valuable
+features, it’s time to actually fit our model. In this case we will use a classification algorithm
+called logistic regression. To create our classifier we instantiate an instance of
+LogisticRegression, using the default configuration or hyperparameters. We then set the label
+columns and the feature columns; the column names we are setting—label and features—are
+actually the default labels for all estimators in Spark MLlib, and in later chapters we omit them:
+// in Scala
+import org.apache.spark.ml.classification.LogisticRegression
+val lr = new LogisticRegression().setLabelCol("label").setFeaturesCol("features")
+# in Python
+from pyspark.ml.classification import LogisticRegression
+lr = LogisticRegression(labelCol="label",featuresCol="features")
+Before we actually go about training this model, let’s inspect the parameters. This is also a great
+way to remind yourself of the options available for each particular model:
+// in Scala
+println(lr.explainParams())
+# in Python
+print lr.explainParams()
+While the output is too large to reproduce here, it shows an explanation of all of the parameters
+for Spark’s implementation of logistic regression. The explainParams method exists on all
+algorithms available in MLlib.
+Upon instantiating an untrained algorithm, it becomes time to fit it to data. In this case, this
+returns a LogisticRegressionModel:
+// in Scala
+val fittedLR = lr.fit(train)
+# in Python
+fittedLR = lr.fit(train)
+This code will kick off a Spark job to train the model. As opposed to the transformations that you
+saw throughout the book, the fitting of a machine learning model is eager and performed
+immediately.
+Once complete, you can use the model to make predictions. Logically this means tranforming
+features into labels. We make predictions with the transform method. For example, we can
+transform our training dataset to see what labels our model assigned to the training data and how
+those compare to the true outputs. This, again, is just another DataFrame we can manipulate.
+Let’s perform that prediction with the following code snippet:
+fittedLR.transform(train).select("label", "prediction").show()
+This results in:
++-----+----------+
+|label|prediction|
++-----+----------+
+| 0.0| 0.0|
+...
+| 0.0| 0.0|
++-----+----------+
+Our next step would be to manually evaluate this model and calculate performance metrics like
+the true positive rate, false negative rate, and so on. We might then turn around and try a
+different set of parameters to see if those perform better. However, while this is a useful process,
+it can also be quite tedious. Spark helps you avoid manually trying different models and
+evaluation criteria by allowing you to specify your workload as a declarative pipeline of work
+that includes all your transformations as well as tuning your hyperparameters.
+A REVIEW OF HYPERPARAMETERS
+Although we mentioned them previously, let’s more formally define hyperparameters.
+Hyperparameters are configuration parameters that affect the training process, such as model
+architecture and regularization. They are set prior to starting training. For instance, logistic
+regression has a hyperparameter that determines how much regularization should be
+performed on our data through the training phase (regularization is a technique that pushes
+models against overfitting data). You’ll see in the next couple of pages that we can set up our
+pipeline to try different hyperparameter values (e.g., different regularization values) in order
+to compare different variations of the same model against one another.
+Pipelining Our Workflow
+As you probably noticed, if you are performing a lot of transformations, writing all the steps and
+keeping track of DataFrames ends up being quite tedious. That’s why Spark includes the
+Pipeline concept. A pipeline allows you to set up a dataflow of the relevant transformations
+that ends with an estimator that is automatically tuned according to your specifications, resulting
+in a tuned model ready for use. Figure 24-4 illustrates this process.
+Figure 24-4. Pipelining the ML workflow
+Note that it is essential that instances of transformers or models are not reused across different
+pipelines. Always create a new instance of a model before creating another pipeline.
+In order to make sure we don’t overfit, we are going to create a holdout test set and tune our
+hyperparameters based on a validation set (note that we create this validation set based on the
+original dataset, not the preparedDF used in the previous pages):
+// in Scala
+val Array(train, test) = df.randomSplit(Array(0.7, 0.3))
+# in Python
+train, test = df.randomSplit([0.7, 0.3])
+Now that you have a holdout set, let’s create the base stages in our pipeline. A stage simply
+represents a transformer or an estimator. In our case, we will have two estimators. The RFomula
+will first analyze our data to understand the types of input features and then transform them to
+create new features. Subsequently, the LogisticRegression object is the algorithm that we will
+train to produce a model:
+// in Scala
+val rForm = new RFormula()
+val lr = new LogisticRegression().setLabelCol("label").setFeaturesCol("features")
+# in Python
+rForm = RFormula()
+lr = LogisticRegression().setLabelCol("label").setFeaturesCol("features")
+We will set the potential values for the RFormula in the next section. Now instead of manually
+using our transformations and then tuning our model we just make them stages in the overall
+pipeline, as in the following code snippet:
+// in Scala
+import org.apache.spark.ml.Pipeline
+val stages = Array(rForm, lr)
+val pipeline = new Pipeline().setStages(stages)
+# in Python
+from pyspark.ml import Pipeline
+stages = [rForm, lr]
+pipeline = Pipeline().setStages(stages)
+Training and Evaluation
+Now that you arranged the logical pipeline, the next step is training. In our case, we won’t train
+just one model (like we did previously); we will train several variations of the model by
+specifying different combinations of hyperparameters that we would like Spark to test. We will
+then select the best model using an Evaluator that compares their predictions on our validation
+data. We can test different hyperparameters in the entire pipeline, even in the RFormula that we
+use to manipulate the raw data. This code shows how we go about doing that:
+// in Scala
+import org.apache.spark.ml.tuning.ParamGridBuilder
+val params = new ParamGridBuilder()
+.addGrid(rForm.formula, Array(
+"lab ~ . + color:value1",
+"lab ~ . + color:value1 + color:value2"))
+.addGrid(lr.elasticNetParam, Array(0.0, 0.5, 1.0))
+.addGrid(lr.regParam, Array(0.1, 2.0))
+.build()
+# in Python
+from pyspark.ml.tuning import ParamGridBuilder
+params = ParamGridBuilder()\
+.addGrid(rForm.formula, [
+"lab ~ . + color:value1",
+"lab ~ . + color:value1 + color:value2"])\
+.addGrid(lr.elasticNetParam, [0.0, 0.5, 1.0])\
+.addGrid(lr.regParam, [0.1, 2.0])\
+.build()
+In our current paramter grid, there are three hyperparameters that will diverge from the defaults:
+Two different versions of the RFormula
+Three different options for the ElasticNet parameter
+Two different options for the regularization parameter
+This gives us a total of 12 different combinations of these parameters, which means we will be
+training 12 different versions of logistic regression. We explain the ElasticNet parameter as
+well as the regularization options in Chapter 26.
+Now that the grid is built, it’s time to specify our evaluation process. The evaluator allows us to
+automatically and objectively compare multiple models to the same evaluation metric. There are
+evaluators for classification and regression, covered in later chapters, but in this case we will use
+the BinaryClassificationEvaluator, which has a number of potential evaluation metrics, as
+we’ll discuss in Chapter 26. In this case we will use areaUnderROC, which is the total area under
+the receiver operating characteristic, a common measure of classification performance:
+// in Scala
+import org.apache.spark.ml.evaluation.BinaryClassificationEvaluator
+val evaluator = new BinaryClassificationEvaluator()
+.setMetricName("areaUnderROC")
+.setRawPredictionCol("prediction")
+.setLabelCol("label")
+# in Python
+from pyspark.ml.evaluation import BinaryClassificationEvaluator
+evaluator = BinaryClassificationEvaluator()\
+.setMetricName("areaUnderROC")\
+.setRawPredictionCol("prediction")\
+.setLabelCol("label")
+Now that we have a pipeline that specifies how our data should be transformed, we will perform
+model selection to try out different hyperparameters in our logistic regression model and
+measure success by comparing their performance using the areaUnderROC metric.
+As we discussed, it is a best practice in machine learning to fit hyperparameters on a validation
+set (instead of your test set) to prevent overfitting. For this reason, we cannot use our holdout test
+set (that we created before) to tune these parameters. Luckily, Spark provides two options for
+performing hyperparameter tuning automatically. We can use TrainValidationSplit, which
+will simply perform an arbitrary random split of our data into two different groups, or
+CrossValidator, which performs K-fold cross-validation by splitting the dataset into k nonoverlapping, randomly partitioned folds:
+// in Scala
+import org.apache.spark.ml.tuning.TrainValidationSplit
+val tvs = new TrainValidationSplit()
+.setTrainRatio(0.75) // also the default.
+.setEstimatorParamMaps(params)
+.setEstimator(pipeline)
+.setEvaluator(evaluator)
+# in Python
+from pyspark.ml.tuning import TrainValidationSplit
+tvs = TrainValidationSplit()\
+.setTrainRatio(0.75)\
+.setEstimatorParamMaps(params)\
+.setEstimator(pipeline)\
+.setEvaluator(evaluator)
+Let’s run the entire pipeline we constructed. To review, running this pipeline will test out every
+version of the model against the validation set. Note the type of tvsFitted is
+TrainValidationSplitModel. Any time we fit a given model, it outputs a “model” type:
+// in Scala
+val tvsFitted = tvs.fit(train)
+# in Python
+tvsFitted = tvs.fit(train)
+And of course evaluate how it performs on the test set!
+evaluator.evaluate(tvsFitted.transform(test)) // 0.9166666666666667
+We can also see a training summary for some models. To do this we extract it from the pipeline,
+cast it to the proper type, and print our results. The metrics available on each model are discussed
+throughout the next several chapters. Here’s how we can see the results:
+// in Scala
+import org.apache.spark.ml.PipelineModel
+import org.apache.spark.ml.classification.LogisticRegressionModel
+val trainedPipeline = tvsFitted.bestModel.asInstanceOf[PipelineModel]
+val TrainedLR = trainedPipeline.stages(1).asInstanceOf[LogisticRegressionModel]
+val summaryLR = TrainedLR.summary
+summaryLR.objectiveHistory // 0.6751425885789243, 0.5543659647777687, 0.473776...
+The objective history shown here provides details related to how our algorithm performed over
+each training iteration. This can be helpful because we can note the progress our algorithm is
+making toward the best model. Large jumps are typically expected at the beginning, but over
+time the values should become smaller and smaller, with only small amounts of variation
+between the values.
+Persisting and Applying Models
+Now that we trained this model, we can persist it to disk to use it for prediction purposes later on:
+tvsFitted.write.overwrite().save("/tmp/modelLocation")
+After writing out the model, we can load it into another Spark program to make predictions. To
+do this, we need to use a “model” version of our particular algorithm to load our persisted model
+from disk. If we were to use CrossValidator, we’d have to read in the persisted version as the
+CrossValidatorModel, and if we were to use LogisticRegression manually we would have
+to use LogisticRegressionModel. In this case, we use TrainValidationSplit, which outputs
+TrainValidationSplitModel:
+// in Scala
+import org.apache.spark.ml.tuning.TrainValidationSplitModel
+val model = TrainValidationSplitModel.load("/tmp/modelLocation")
+model.transform(test)
+Deployment Patterns
+In Spark there are several different deployment patterns for putting machine learning models into
+production. Figure 24-5 illustrates common workflows.
+Figure 24-5. The productionization process
+Here are the various options for how you might go about deploying a Spark model. These are the
+general options you should be able to link to the process illustrated in Figure 24-5.
+Train your machine learning (ML) model offline and then supply it with offline data. In
+this context, we mean offline data to be data that is stored for analysis, and not data that
+you need to get an answer from quickly. Spark is well suited to this sort of deployment.
+Train your model offline and then put the results into a database (usually a key-value
+store). This works well for something like recommendation but poorly for something
+like classification or regression where you cannot just look up a value for a given user
+but must calculate one based on the input.
+Train your ML algorithm offline, persist the model to disk, and then use that for serving.
+This is not a low-latency solution if you use Spark for the serving part, as the overhead
+of starting up a Spark job can be high, even if you’re not running on a cluster.
+Additionally this does not parallelize well, so you’ll likely have to put a load balancer in
+front of multiple model replicas and build out some REST API integration yourself.
+There are some interesting potential solutions to this problem, but no standards currently
+exist for this sort of model serving.
+Manually (or via some other software) convert your distributed model to one that can
+run much more quickly on a single machine. This works well when there is not too
+much manipulation of the raw data in Spark but can be hard to maintain over time.
+Again, there are several solutions in progress. For example, MLlib can export some
+models to PMML, a common model interchange format.
+Train your ML algorithm online and use it online. This is possible when used in
+conjunction with Structured Streaming, but can be complex for some models.
+While these are some of the options, there are many other ways of performing model deployment
+and management. This is an area under heavy development and many potential innovations are
+currently being worked on.
+Conclusion
+In this chapter we covered the core concepts behind advanced analytics and MLlib. We also
+showed you how to use them. The next chapter will discuss preprocessing in depth, including
+Spark’s tools for feature engineering and data cleaning. Then we’ll move into detailed
+descriptions of each algorithm available in MLlib along with some tools for graph analytics and
+deep learning.
+Chapter 25. Preprocessing and Feature
+Engineering
+Any data scientist worth her salt knows that one of the biggest challenges (and time sinks) in
+advanced analytics is preprocessing. It’s not that it’s particularly complicated programming, but
+rather that it requires deep knowledge of the data you are working with and an understanding of
+what your model needs in order to successfully leverage this data. This chapter covers the details
+of how you can use Spark to perform preprocessing and feature engineering. We’ll walk through
+the core requirements you’ll need to meet in order to train an MLlib model in terms of how your
+data is structured. We will then discuss the different tools Spark makes available for performing
+this kind of work.
+Formatting Models According to Your Use Case
+To preprocess data for Spark’s different advanced analytics tools, you must consider your end
+objective. The following list walks through the requirements for input data structure for each
+advanced analytics task in MLlib:
+In the case of most classification and regression algorithms, you want to get your data
+into a column of type Double to represent the label and a column of type Vector (either
+dense or sparse) to represent the features.
+In the case of recommendation, you want to get your data into a column of users, a
+column of items (say movies or books), and a column of ratings.
+In the case of unsupervised learning, a column of type Vector (either dense or sparse) is
+needed to represent the features.
+In the case of graph analytics, you will want a DataFrame of vertices and a DataFrame
+of edges.
+The best way to get your data in these formats is through transformers. Transformers are
+functions that accept a DataFrame as an argument and return a new DataFrame as a response.
+This chapter will focus on what transformers are relevant for particular use cases rather than
+attempting to enumerate every possible transformer.
+NOTE
+Spark provides a number of transformers as part of the org.apache.spark.ml.feature package. The
+corresponding package in Python is pyspark.ml.feature. New transformers are constantly popping
+up in Spark MLlib and therefore it is impossible to include a definitive list in this book. The most upto-date information can be found on the Spark documentation site.
+Before we proceed, we’re going to read in several different sample datasets, each of which has
+different properties we will manipulate in this chapter:
+// in Scala
+val sales = spark.read.format("csv")
+.option("header", "true")
+.option("inferSchema", "true")
+.load("/data/retail-data/by-day/*.csv")
+.coalesce(5)
+.where("Description IS NOT NULL")
+val fakeIntDF = spark.read.parquet("/data/simple-ml-integers")
+var simpleDF = spark.read.json("/data/simple-ml")
+val scaleDF = spark.read.parquet("/data/simple-ml-scaling")
+# in Python
+sales = spark.read.format("csv")\
+.option("header", "true")\
+.option("inferSchema", "true")\
+.load("/data/retail-data/by-day/*.csv")\
+.coalesce(5)\
+.where("Description IS NOT NULL")
+fakeIntDF = spark.read.parquet("/data/simple-ml-integers")
+simpleDF = spark.read.json("/data/simple-ml")
+scaleDF = spark.read.parquet("/data/simple-ml-scaling")
+In addition to this realistic sales data, we’re going to use several simple synthetic datasets as
+well. FakeIntDF, simpleDF, and scaleDF all have very few rows. This will give you the ability
+to focus on the exact data manipulation we are performing instead of the various inconsistencies
+of any particular dataset. Because we’re going to be accessing the sales data a number of times,
+we’re going to cache it so we can read it efficiently from memory as opposed to reading it from
+disk every time we need it. Let’s also check out the first several rows of data in order to better
+understand what’s in the dataset:
+sales.cache()
+sales.show()
++---------+---------+--------------------+--------+-------------------+---------
+|InvoiceNo|StockCode| Description|Quantity| InvoiceDate|UnitPr...
++---------+---------+--------------------+--------+-------------------+---------
+| 580538| 23084| RABBIT NIGHT LIGHT| 48|2011-12-05 08:38:00| 1...
+...
+| 580539| 22375|AIRLINE BAG VINTA...| 4|2011-12-05 08:39:00| 4...
++---------+---------+--------------------+--------+-------------------+---------
+NOTE
+It is important to note that we filtered out null values here. MLlib does not always play nicely with null
+values at this point in time. This is a frequent cause for problems and errors and a great first step when
+you are debugging. Improvements are also made with every Spark release to improve algorithm
+handling of null values.
+Transformers
+We discussed transformers in the previous chapter, but it’s worth reviewing them again here.
+Transformers are functions that convert raw data in some way. This might be to create a new
+interaction variable (from two other variables), to normalize a column, or to simply turn it into a
+Double to be input into a model. Transformers are primarily used in preprocessing or feature
+generation.
+Spark’s transformer only includes a transform method. This is because it will not change based
+on the input data. Figure 25-1 is a simple illustration. On the left is an input DataFrame with the
+column to be manipulated. On the right is the input DataFrame with a new column representing
+the output transformation.
+Figure 25-1. A Spark transformer
+The Tokenizer is an example of a transformer. It tokenizes a string, splitting on a given
+character, and has nothing to learn from our data; it simply applies a function. We’ll discuss the
+tokenizer in more depth later in this chapter, but here’s a small code snippet showing how a
+tokenizer is built to accept the input column, how it transforms the data, and then the output from
+that transformation:
+// in Scala
+import org.apache.spark.ml.feature.Tokenizer
+val tkn = new Tokenizer().setInputCol("Description")
+tkn.transform(sales.select("Description")).show(false)
++-----------------------------------+------------------------------------------+
+|Description |tok_7de4dfc81ab7__output |
++-----------------------------------+------------------------------------------+
+|RABBIT NIGHT LIGHT |[rabbit, night, light] |
+|DOUGHNUT LIP GLOSS |[doughnut, lip, gloss] |
+...
+|AIRLINE BAG VINTAGE WORLD CHAMPION |[airline, bag, vintage, world, champion] |
+|AIRLINE BAG VINTAGE JET SET BROWN |[airline, bag, vintage, jet, set, brown] |
++-----------------------------------+------------------------------------------+
+Estimators for Preprocessing
+Another tool for preprocessing are estimators. An estimator is necessary when a transformation
+you would like to perform must be initialized with data or information about the input column
+(often derived by doing a pass over the input column itself). For example, if you wanted to scale
+the values in our column to have mean zero and unit variance, you would need to perform a pass
+over the entire data in order to calculate the values you would use to normalize the data to mean
+zero and unit variance. In effect, an estimator can be a transformer configured according to your
+particular input data. In simplest terms, you can either blindly apply a transformation (a “regular”
+transformer type) or perform a transformation based on your data (an estimator type). Figure 25-
+2 is a simple illustration of an estimator fitting to a particular input dataset, generating a
+transformer that is then applied to the input dataset to append a new column (of the transformed
+data).
+Figure 25-2. A Spark estimator
+An example of this type of estimator is the StandardScaler, which scales your input column
+according to the range of values in that column to have a zero mean and a variance of 1 in each
+dimension. For that reason it must first perform a pass over the data to create the transformer.
+Here’s a sample code snippet showing the entire process, as well as the output:
+// in Scala
+import org.apache.spark.ml.feature.StandardScaler
+val ss = new StandardScaler().setInputCol("features")
+ss.fit(scaleDF).transform(scaleDF).show(false)
++---+--------------+------------------------------------------------------------+
+|id |features |stdScal_d66fbeac10ea__output |
++---+--------------+------------------------------------------------------------+
+|0 |[1.0,0.1,-1.0]|[1.1952286093343936,0.02337622911060922,-0.5976143046671968]|
+...
+|1 |[3.0,10.1,3.0]|[3.5856858280031805,2.3609991401715313,1.7928429140015902] |
++---+--------------+------------------------------------------------------------+
+We will use both estimators and transformers throughout and cover more about these particular
+estimators (and add examples in Python) later on in this chapter.
+Transformer Properties
+All transformers require you to specify, at a minimum, the inputCol and the outputCol, which
+represent the column name of the input and output, respectively. You set these with
+setInputCol and setOutputCol. There are some defaults (you can find these in the
+documentation), but it is a best practice to manually specify them yourself for clarity. In addition
+to input and output columns, all transformers have different parameters that you can tune
+(whenever we mention a parameter in this chapter you must set it with a set() method). In
+Python, we also have another method to set these values with keyword arguments to the object’s
+constructor. We exclude these from the examples in the next chapter for consistency. Estimators
+require you to fit the transformer to your particular dataset and then call transform on the
+resulting object.
+NOTE
+Spark MLlib stores metadata about the columns it uses in each DataFrame as an attribute on the
+column itself. This allows it to properly store (and annotate) that a column of Doubles may actually
+represent a series of categorical variables instead of continuous values. However, metadata won’t show
+up when you print the schema or the DataFrame.
+High-Level Transformers
+High-level transformers, such as the RFormula we saw in the previous chapter, allow you to
+concisely specify a number of transformations in one. These operate at a “high level”, and allow
+you to avoid doing data manipulations or transformations one by one. In general, you should try
+to use the highest level transformers you can, in order to minimize the risk of error and help you
+focus on the business problem instead of the smaller details of implementation. While this is not
+always possible, it’s a good objective.
+RFormula
+The RFormula is the easiest transfomer to use when you have “conventionally” formatted data.
+Spark borrows this transformer from the R language to make it simple to declaratively specify a
+set of transformations for your data. With this transformer, values can be either numerical or
+categorical and you do not need to extract values from strings or manipulate them in any way.
+The RFormula will automatically handle categorical inputs (specified as strings) by performing
+something called one-hot encoding. In brief, one-hot encoding converts a set of values into a set
+of binary columns specifying whether or not the data point has each particular value (we’ll
+discuss one-hot encoding in more depth later in the chapter). With the RFormula, numeric
+columns will be cast to Double but will not be one-hot encoded. If the label column is of type
+String, it will be first transformed to Double with StringIndexer.
+WARNING
+Automatic casting of numeric columns to Double without one-hot encoding has some important
+implications. If you have numerically valued categorical variables, they will only be cast to Double,
+implicitly specifying an order. It is important to ensure the input types correspond to the expected
+conversion. If you have categorical variables that really have no order relation, they should be cast to
+String. You can also manually index columns (see “Working with Categorical Features”).
+The RFormula allows you to specify your transformations in declarative syntax. It is simple to
+use once you understand the syntax. Currently, RFormula supports a limited subset of the R
+operators that in practice work quite well for simple transformations. The basic operators are:
+~
+Separate target and terms
++
+Concatenate terms; “+ 0” means removing the intercept (this means the y-intercept of the line
+that we will fit will be 0)
+-
+Remove a term; “- 1” means removing intercept (this means the y-intercept of the line that
+we will fit will be 0)
+:
+Interaction (multiplication for numeric values, or binarized categorical values)
+.
+All columns except the target/dependent variable
+RFormula also uses default columns of label and features to label, you guessed it, the label
+and the set of features that it outputs (for supervised machine learning). The models covered later
+on in this chapter by default require those column names, making it easy to pass the resulting
+transformed DataFrame into a model for training. If this doesn’t make sense yet, don’t worry—
+it’ll become clear once we actually start using models in later chapters.
+Let’s use RFormula in an example. In this case, we want to use all available variables (the .) and
+then specify an interaction between value1 and color and value2 and color as additional
+features to generate:
+// in Scala
+import org.apache.spark.ml.feature.RFormula
+val supervised = new RFormula()
+.setFormula("lab ~ . + color:value1 + color:value2")
+supervised.fit(simpleDF).transform(simpleDF).show()
+# in Python
+from pyspark.ml.feature import RFormula
+supervised = RFormula(formula="lab ~ . + color:value1 + color:value2")
+supervised.fit(simpleDF).transform(simpleDF).show()
++-----+----+------+------------------+--------------------+-----+
+|color| lab|value1| value2| features|label|
++-----+----+------+------------------+--------------------+-----+
+|green|good| 1|14.386294994851129|(10,[1,2,3,5,8],[...| 1.0|
+| blue| bad| 8|14.386294994851129|(10,[2,3,6,9],[8....| 0.0|
+...
+| red| bad| 1| 38.97187133755819|(10,[0,2,3,4,7],[...| 0.0|
+| red| bad| 2|14.386294994851129|(10,[0,2,3,4,7],[...| 0.0|
++-----+----+------+------------------+--------------------+-----+
+SQL Transformers
+A SQLTransformer allows you to leverage Spark’s vast library of SQL-related manipulations
+just as you would a MLlib transformation. Any SELECT statement you can use in SQL is a valid
+transformation. The only thing you need to change is that instead of using the table name, you
+should just use the keyword THIS. You might want to use SQLTransformer if you want to
+formally codify some DataFrame manipulation as a preprocessing step, or try different SQL
+expressions for features during hyperparameter tuning. Also note that the output of this
+transformation will be appended as a column to the output DataFrame.
+You might want to use an SQLTransformer in order to represent all of your manipulations on the
+very rawest form of your data so you can version different variations of manipulations as
+transformers. This gives you the benefit of building and testing varying pipelines, all by simply
+swapping out transformers. The following is a basic example of using SQLTransformer:
+// in Scala
+import org.apache.spark.ml.feature.SQLTransformer
+val basicTransformation = new SQLTransformer()
+.setStatement("""
+SELECT sum(Quantity), count(*), CustomerID
+FROM __THIS__
+GROUP BY CustomerID
+""")
+basicTransformation.transform(sales).show()
+# in Python
+from pyspark.ml.feature import SQLTransformer
+basicTransformation = SQLTransformer()\
+.setStatement("""
+SELECT sum(Quantity), count(*), CustomerID
+FROM __THIS__
+GROUP BY CustomerID
+""")
+basicTransformation.transform(sales).show()
+Here’s a sample of the output:
+-------------+--------+----------+
+|sum(Quantity)|count(1)|CustomerID|
++-------------+--------+----------+
+| 119| 62| 14452.0|
+...
+| 138| 18| 15776.0|
++-------------+--------+----------+
+For extensive samples of these transformations, refer back to Part II.
+VectorAssembler
+The VectorAssembler is a tool you’ll use in nearly every single pipeline you generate. It helps
+concatenate all your features into one big vector you can then pass into an estimator. It’s used
+typically in the last step of a machine learning pipeline and takes as input a number of columns
+of Boolean, Double, or Vector. This is particularly helpful if you’re going to perform a number
+of manipulations using a variety of transformers and need to gather all of those results together.
+The output from the following code snippet will make it clear how this works:
+// in Scala
+import org.apache.spark.ml.feature.VectorAssembler
+val va = new VectorAssembler().setInputCols(Array("int1", "int2", "int3"))
+va.transform(fakeIntDF).show()
+# in Python
+from pyspark.ml.feature import VectorAssembler
+va = VectorAssembler().setInputCols(["int1", "int2", "int3"])
+va.transform(fakeIntDF).show()
++----+----+----+--------------------------------------------+
+|int1|int2|int3|VectorAssembler_403ab93eacd5585ddd2d__output|
++----+----+----+--------------------------------------------+
+| 1| 2| 3| [1.0,2.0,3.0]|
+| 4| 5| 6| [4.0,5.0,6.0]|
+| 7| 8| 9| [7.0,8.0,9.0]|
++----+----+----+--------------------------------------------+
+Working with Continuous Features
+Continuous features are just values on the number line, from positive infinity to negative infinity.
+There are two common transformers for continuous features. First, you can convert continuous
+features into categorical features via a process called bucketing, or you can scale and normalize
+your features according to several different requirements. These transformers will only work on
+Double types, so make sure you’ve turned any other numerical values to Double:
+// in Scala
+val contDF = spark.range(20).selectExpr("cast(id as double)")
+# in Python
+contDF = spark.range(20).selectExpr("cast(id as double)")
+Bucketing
+The most straightforward approach to bucketing or binning is using the Bucketizer. This will
+split a given continuous feature into the buckets of your designation. You specify how buckets
+should be created via an array or list of Double values. This is useful because you may want to
+simplify the features in your dataset or simplify their representations for interpretation later on.
+For example, imagine you have a column that represents a person’s weight and you would like to
+predict some value based on this information. In some cases, it might be simpler to create three
+buckets of “overweight,” “average,” and “underweight.”
+To specify the bucket, set its borders. For example, setting splits to 5.0, 10.0, 250.0 on our
+contDF will actually fail because we don’t cover all possible input ranges. When specifying your
+bucket points, the values you pass into splits must satisfy three requirements:
+The minimum value in your splits array must be less than the minimum value in your
+DataFrame.
+The maximum value in your splits array must be greater than the maximum value in
+your DataFrame.
+You need to specify at a minimum three values in the splits array, which creates two
+buckets.
+WARNING
+The Bucketizer can be confusing because we specify bucket borders via the splits method, but these
+are not actually splits.
+To cover all possible ranges, scala.Double.NegativeInfinity might be another split option,
+with scala.Double.PositiveInfinity to cover all possible ranges outside of the inner splits.
+In Python we specify this in the following way: float("inf"), float("-inf").
+In order to handle null or NaN values, we must specify the handleInvalid parameter as a
+certain value. We can either keep those values (keep), error or null, or skip those rows.
+Here’s an example of using bucketing:
+// in Scala
+import org.apache.spark.ml.feature.Bucketizer
+val bucketBorders = Array(-1.0, 5.0, 10.0, 250.0, 600.0)
+val bucketer = new Bucketizer().setSplits(bucketBorders).setInputCol("id")
+bucketer.transform(contDF).show()
+# in Python
+from pyspark.ml.feature import Bucketizer
+bucketBorders = [-1.0, 5.0, 10.0, 250.0, 600.0]
+bucketer = Bucketizer().setSplits(bucketBorders).setInputCol("id")
+bucketer.transform(contDF).show()
++----+---------------------------------------+
+| id|Bucketizer_4cb1be19f4179cc2545d__output|
++----+---------------------------------------+
+| 0.0| 0.0|
+...
+|10.0| 2.0|
+|11.0| 2.0|
+...
++----+---------------------------------------+
+In addition to splitting based on hardcoded values, another option is to split based on percentiles
+in our data. This is done with QuantileDiscretizer, which will bucket the values into userspecified buckets with the splits being determined by approximate quantiles values. For instance,
+the 90th quantile is the point in your data at which 90% of the data is below that value. You can
+control how finely the buckets should be split by setting the relative error for the approximate
+quantiles calculation using setRelativeError. Spark does this is by allowing you to specify the
+number of buckets you would like out of the data and it will split up your data accordingly. The
+following is an example:
+// in Scala
+import org.apache.spark.ml.feature.QuantileDiscretizer
+val bucketer = new QuantileDiscretizer().setNumBuckets(5).setInputCol("id")
+val fittedBucketer = bucketer.fit(contDF)
+fittedBucketer.transform(contDF).show()
+# in Python
+from pyspark.ml.feature import QuantileDiscretizer
+bucketer = QuantileDiscretizer().setNumBuckets(5).setInputCol("id")
+fittedBucketer = bucketer.fit(contDF)
+fittedBucketer.transform(contDF).show()
++----+----------------------------------------+
+| id|quantileDiscretizer_cd87d1a1fb8e__output|
++----+----------------------------------------+
+| 0.0| 0.0|
+...
+| 6.0| 1.0|
+| 7.0| 2.0|
+...
+|14.0| 3.0|
+|15.0| 4.0|
+...
++----+----------------------------------------+
+Advanced bucketing techniques
+The techniques descriubed here are the most common ways of bucketing data, but there are a
+number of other ways that exist in Spark today. All of these processes are the same from a data
+flow perspective: start with continuous data and place them in buckets so that they become
+categorical. Differences arise depending on the algorithm used to compute these buckets. The
+simple examples we just looked at are easy to intepret and work with, but more advanced
+techniques such as locality sensitivity hashing (LSH) are also available in MLlib.
+Scaling and Normalization
+We saw how we can use bucketing to create groups out of continuous variables. Another
+common task is to scale and normalize continuous data. While not always necessary, doing so is
+usually a best practice. You might want to do this when your data contains a number of columns
+based on different scales. For instance, say we have a DataFrame with two columns: weight (in
+ounces) and height (in feet). If you don’t scale or normalize, the algorithm will be less sensitive
+to variations in height because height values in feet are much lower than weight values in
+ounces. That’s an example where you should scale your data.
+An example of normalization might involve transforming the data so that each point’s value is a
+representation of its distance from the mean of that column. Using the same example from
+before, we might want to know how far a given individual’s height is from the mean height.
+Many algorithms assume that their input data is normalized.
+As you might imagine, there are a multitude of algorithms we can apply to our data to scale or
+normalize it. Enumerating them all is unnecessary here because they are covered in many other
+texts and machine learning libraries. If you’re unfamiliar with the concept in detail, check out
+any of the books referenced in the previous chapter. Just keep in mind the fundamental goal—we
+want our data on the same scale so that values can easily be compared to one another in a
+sensible way. In MLlib, this is always done on columns of type Vector. MLlib will look across
+all the rows in a given column (of type Vector) and then treat every dimension in those vectors
+as its own particular column. It will then apply the scaling or normalization function on each
+dimension separately.
+A simple example might be the following vectors in a column:
+1,2
+3,4
+When we apply our scaling (but not normalization) function, the “3” and the “1” will be adjusted
+according to those two values while the “2” and the “4” will be adjusted according to one
+another. This is commonly referred to as component-wise comparisons.
+StandardScaler
+The StandardScaler standardizes a set of features to have zero mean and a standard deviation
+of 1. The flag withStd will scale the data to unit standard deviation while the flag withMean
+(false by default) will center the data prior to scaling it.
+WARNING
+Centering can be very expensive on sparse vectors because it generally turns them into dense vectors,
+so be careful before centering your data.
+Here’s an example of using a StandardScaler:
+// in Scala
+import org.apache.spark.ml.feature.StandardScaler
+val sScaler = new StandardScaler().setInputCol("features")
+sScaler.fit(scaleDF).transform(scaleDF).show()
+# in Python
+from pyspark.ml.feature import StandardScaler
+sScaler = StandardScaler().setInputCol("features")
+sScaler.fit(scaleDF).transform(scaleDF).show()
+The output is shown below:
++---+--------------+------------------------------------------------------------+
+|id |features |StandardScaler_41aaa6044e7c3467adc3__output |
++---+--------------+------------------------------------------------------------+
+|0 |[1.0,0.1,-1.0]|[1.1952286093343936,0.02337622911060922,-0.5976143046671968]|
+...
+|1 |[3.0,10.1,3.0]|[3.5856858280031805,2.3609991401715313,1.7928429140015902] |
++---+--------------+------------------------------------------------------------+
+MinMaxScaler
+The MinMaxScaler will scale the values in a vector (component wise) to the proportional values
+on a scale from a given min value to a max value. If you specify the minimum value to be 0 and
+the maximum value to be 1, then all the values will fall in between 0 and 1:
+// in Scala
+import org.apache.spark.ml.feature.MinMaxScaler
+val minMax = new MinMaxScaler().setMin(5).setMax(10).setInputCol("features")
+val fittedminMax = minMax.fit(scaleDF)
+fittedminMax.transform(scaleDF).show()
+# in Python
+from pyspark.ml.feature import MinMaxScaler
+minMax = MinMaxScaler().setMin(5).setMax(10).setInputCol("features")
+fittedminMax = minMax.fit(scaleDF)
+fittedminMax.transform(scaleDF).show()
++---+--------------+-----------------------------------------+
+| id| features|MinMaxScaler_460cbafafbe6b9ab7c62__output|
++---+--------------+-----------------------------------------+
+| 0|[1.0,0.1,-1.0]| [5.0,5.0,5.0]|
+...
+| 1|[3.0,10.1,3.0]| [10.0,10.0,10.0]|
++---+--------------+-----------------------------------------+
+MaxAbsScaler
+The max absolute scaler (MaxAbsScaler) scales the data by dividing each value by the maximum
+absolute value in this feature. All values therefore end up between −1 and 1. This transformer
+does not shift or center the data at all in the process:
+// in Scala
+import org.apache.spark.ml.feature.MaxAbsScaler
+val maScaler = new MaxAbsScaler().setInputCol("features")
+val fittedmaScaler = maScaler.fit(scaleDF)
+fittedmaScaler.transform(scaleDF).show()
+# in Python
+from pyspark.ml.feature import MaxAbsScaler
+maScaler = MaxAbsScaler().setInputCol("features")
+fittedmaScaler = maScaler.fit(scaleDF)
+fittedmaScaler.transform(scaleDF).show()
++---+--------------+----------------------------------------------------------+
+|id |features |MaxAbsScaler_402587e1d9b6f268b927__output |
++---+--------------+----------------------------------------------------------+
+|0 |[1.0,0.1,-1.0]|[0.3333333333333333,0.009900990099009901,-0.3333333333333]|
+...
+|1 |[3.0,10.1,3.0]|[1.0,1.0,1.0] |
++---+--------------+----------------------------------------------------------+
+ElementwiseProduct
+The ElementwiseProduct allows us to scale each value in a vector by an arbitrary value. For
+example, given the vector below and the row “1, 0.1, -1” the output will be “10, 1.5, -20.”
+Naturally the dimensions of the scaling vector must match the dimensions of the vector inside
+the relevant column:
+// in Scala
+import org.apache.spark.ml.feature.ElementwiseProduct
+import org.apache.spark.ml.linalg.Vectors
+val scaleUpVec = Vectors.dense(10.0, 15.0, 20.0)
+val scalingUp = new ElementwiseProduct()
+.setScalingVec(scaleUpVec)
+.setInputCol("features")
+scalingUp.transform(scaleDF).show()
+# in Python
+from pyspark.ml.feature import ElementwiseProduct
+from pyspark.ml.linalg import Vectors
+scaleUpVec = Vectors.dense(10.0, 15.0, 20.0)
+scalingUp = ElementwiseProduct()\
+.setScalingVec(scaleUpVec)\
+.setInputCol("features")
+scalingUp.transform(scaleDF).show()
++---+--------------+-----------------------------------------------+
+| id| features|ElementwiseProduct_42b29ea5a55903e9fea6__output|
++---+--------------+-----------------------------------------------+
+| 0|[1.0,0.1,-1.0]| [10.0,1.5,-20.0]|
+...
+| 1|[3.0,10.1,3.0]| [30.0,151.5,60.0]|
++---+--------------+-----------------------------------------------+
+Normalizer
+The normalizer allows us to scale multidimensional vectors using one of several power norms,
+set through the parameter “p”. For example, we can use the Manhattan norm (or Manhattan
+distance) with p = 1, Euclidean norm with p = 2, and so on. The Manhattan distance is a measure
+of distance where you can only travel from point to point along the straight lines of an axis (like
+the streets in Manhattan).
+Here’s an example of using the Normalizer:
+// in Scala
+import org.apache.spark.ml.feature.Normalizer
+val manhattanDistance = new Normalizer().setP(1).setInputCol("features")
+manhattanDistance.transform(scaleDF).show()
+# in Python
+from pyspark.ml.feature import Normalizer
+manhattanDistance = Normalizer().setP(1).setInputCol("features")
+manhattanDistance.transform(scaleDF).show()
++---+--------------+-------------------------------+
+| id| features|normalizer_1bf2cd17ed33__output|
++---+--------------+-------------------------------+
+| 0|[1.0,0.1,-1.0]| [0.47619047619047...|
+| 1| [2.0,1.1,1.0]| [0.48780487804878...|
+| 0|[1.0,0.1,-1.0]| [0.47619047619047...|
+| 1| [2.0,1.1,1.0]| [0.48780487804878...|
+| 1|[3.0,10.1,3.0]| [0.18633540372670...|
++---+--------------+-------------------------------+
+Working with Categorical Features
+The most common task for categorical features is indexing. Indexing converts a categorical
+variable in a column to a numerical one that you can plug into machine learning algorithms.
+While this is conceptually simple, there are some catches that are important to keep in mind so
+that Spark can do this in a stable and repeatable manner.
+In general, we recommend re-indexing every categorical variable when pre-processing just for
+consistency’s sake. This can be helpful in maintaining your models over the long run as your
+encoding practices may change over time.
+StringIndexer
+The simplest way to index is via the StringIndexer, which maps strings to different numerical
+IDs. Spark’s StringIndexer also creates metadata attached to the DataFrame that specify what
+inputs correspond to what outputs. This allows us later to get inputs back from their respective
+index values:
+// in Scala
+import org.apache.spark.ml.feature.StringIndexer
+val lblIndxr = new StringIndexer().setInputCol("lab").setOutputCol("labelInd")
+val idxRes = lblIndxr.fit(simpleDF).transform(simpleDF)
+idxRes.show()
+# in Python
+from pyspark.ml.feature import StringIndexer
+lblIndxr = StringIndexer().setInputCol("lab").setOutputCol("labelInd")
+idxRes = lblIndxr.fit(simpleDF).transform(simpleDF)
+idxRes.show()
++-----+----+------+------------------+--------+
+|color| lab|value1| value2|labelInd|
++-----+----+------+------------------+--------+
+|green|good| 1|14.386294994851129| 1.0|
+...
+| red| bad| 2|14.386294994851129| 0.0|
++-----+----+------+------------------+--------+
+We can also apply StringIndexer to columns that are not strings, in which case, they will be
+converted to strings before being indexed:
+// in Scala
+val valIndexer = new StringIndexer()
+.setInputCol("value1")
+.setOutputCol("valueInd")
+valIndexer.fit(simpleDF).transform(simpleDF).show()
+# in Python
+valIndexer = StringIndexer().setInputCol("value1").setOutputCol("valueInd")
+valIndexer.fit(simpleDF).transform(simpleDF).show()
++-----+----+------+------------------+--------+
+|color| lab|value1| value2|valueInd|
++-----+----+------+------------------+--------+
+|green|good| 1|14.386294994851129| 1.0|
+...
+| red| bad| 2|14.386294994851129| 0.0|
++-----+----+------+------------------+--------+
+Keep in mind that the StringIndexer is an estimator that must be fit on the input data. This
+means it must see all inputs to select a mapping of inputs to IDs. If you train a StringIndexer
+on inputs “a,” “b,” and “c” and then go to use it against input “d,” it will throw an error by
+default. Another option is to skip the entire row if the input value was not a value seen during
+training. Going along with the previous example, an input value of “d” would cause that row to
+be skipped entirely. We can set this option before or after training the indexer or pipeline. More
+options may be added to this feature in the future but as of Spark 2.2, you can only skip or throw
+an error on invalid inputs.
+valIndexer.setHandleInvalid("skip")
+valIndexer.fit(simpleDF).setHandleInvalid("skip")
+Converting Indexed Values Back to Text
+When inspecting your machine learning results, you’re likely going to want to map back to the
+original values. Since MLlib classification models make predictions using the indexed values,
+this conversion is useful for converting model predictions (indices) back to the original
+categories. We can do this with IndexToString. You’ll notice that we do not have to input our
+value to the String key; Spark’s MLlib maintains this metadata for you. You can optionally
+specify the outputs.
+// in Scala
+import org.apache.spark.ml.feature.IndexToString
+val labelReverse = new IndexToString().setInputCol("labelInd")
+labelReverse.transform(idxRes).show()
+# in Python
+from pyspark.ml.feature import IndexToString
+labelReverse = IndexToString().setInputCol("labelInd")
+labelReverse.transform(idxRes).show()
++-----+----+------+------------------+--------+--------------------------------+
+|color| lab|value1| value2|labelInd|IndexToString_415...2a0d__output|
++-----+----+------+------------------+--------+--------------------------------+
+|green|good| 1|14.386294994851129| 1.0| good|
+...
+| red| bad| 2|14.386294994851129| 0.0| bad|
++-----+----+------+------------------+--------+--------------------------------+
+Indexing in Vectors
+VectorIndexer is a helpful tool for working with categorical variables that are already found
+inside of vectors in your dataset. This tool will automatically find categorical features inside of
+your input vectors and convert them to categorical features with zero-based category indices. For
+example, in the following DataFrame, the first column in our Vector is a categorical variable
+with two different categories while the rest of the variables are continuous. By setting
+maxCategories to 2 in our VectorIndexer, we are instructing Spark to take any column in our
+vector with two or less distinct values and convert it to a categorical variable. This can be helpful
+when you know how many unique values there are in your largest category because you can
+specify this and it will automatically index the values accordingly. Conversely, Spark changes
+the data based on this parameter, so if you have continuous variables that don’t appear
+particularly continuous (lots of repeated values) these can be unintentionally converted to
+categorical variables if there are too few unique values.
+// in Scala
+import org.apache.spark.ml.feature.VectorIndexer
+import org.apache.spark.ml.linalg.Vectors
+val idxIn = spark.createDataFrame(Seq(
+(Vectors.dense(1, 2, 3),1),
+(Vectors.dense(2, 5, 6),2),
+(Vectors.dense(1, 8, 9),3)
+)).toDF("features", "label")
+val indxr = new VectorIndexer()
+.setInputCol("features")
+.setOutputCol("idxed")
+.setMaxCategories(2)
+indxr.fit(idxIn).transform(idxIn).show
+# in Python
+from pyspark.ml.feature import VectorIndexer
+from pyspark.ml.linalg import Vectors
+idxIn = spark.createDataFrame([
+(Vectors.dense(1, 2, 3),1),
+(Vectors.dense(2, 5, 6),2),
+(Vectors.dense(1, 8, 9),3)
+]).toDF("features", "label")
+indxr = VectorIndexer()\
+.setInputCol("features")\
+.setOutputCol("idxed")\
+.setMaxCategories(2)
+indxr.fit(idxIn).transform(idxIn).show()
++-------------+-----+-------------+
+| features|label| idxed|
++-------------+-----+-------------+
+|[1.0,2.0,3.0]| 1|[0.0,2.0,3.0]|
+|[2.0,5.0,6.0]| 2|[1.0,5.0,6.0]|
+|[1.0,8.0,9.0]| 3|[0.0,8.0,9.0]|
++-------------+-----+-------------+
+One-Hot Encoding
+Indexing categorical variables is only half of the story. One-hot encoding is an extremely
+common data transformation performed after indexing categorical variables. This is because
+indexing does not always represent our categorical variables in the correct way for downstream
+models to process. For instance, when we index our “color” column, you will notice that some
+colors have a higher value (or index number) than others (in our case, blue is 1 and green is 2).
+This is incorrect because it gives the mathematical appearance that the input to the machine
+learning algorithm seems to specify that green > blue, which makes no sense in the case of the
+current categories. To avoid this, we use OneHotEncoder, which will convert each distinct value
+to a Boolean flag (1 or 0) as a component in a vector. When we encode the color value, then we
+can see these are no longer ordered, making them easier for downstream models (e.g., a linear
+model) to process:
+// in Scala
+import org.apache.spark.ml.feature.{StringIndexer, OneHotEncoder}
+val lblIndxr = new StringIndexer().setInputCol("color").setOutputCol("colorInd")
+val colorLab = lblIndxr.fit(simpleDF).transform(simpleDF.select("color"))
+val ohe = new OneHotEncoder().setInputCol("colorInd")
+ohe.transform(colorLab).show()
+# in Python
+from pyspark.ml.feature import OneHotEncoder, StringIndexer
+lblIndxr = StringIndexer().setInputCol("color").setOutputCol("colorInd")
+colorLab = lblIndxr.fit(simpleDF).transform(simpleDF.select("color"))
+ohe = OneHotEncoder().setInputCol("colorInd")
+ohe.transform(colorLab).show()
++-----+--------+------------------------------------------+
+|color|colorInd|OneHotEncoder_46b5ad1ef147bb355612__output|
++-----+--------+------------------------------------------+
+|green| 1.0| (2,[1],[1.0])|
+| blue| 2.0| (2,[],[])|
+...
+| red| 0.0| (2,[0],[1.0])|
+| red| 0.0| (2,[0],[1.0])|
++-----+--------+------------------------------------------+
+Text Data Transformers
+Text is always tricky input because it often requires lots of manipulation to map to a format that
+a machine learning model will be able to use effectively. There are generally two kinds of texts
+you’ll see: free-form text and string categorical variables. This section primarily focuses on freeform text because we already discussed categorical variables.
+Tokenizing Text
+Tokenization is the process of converting free-form text into a list of “tokens” or individual
+words. The easiest way to do this is by using the Tokenizer class. This transformer will take a
+string of words, separated by whitespace, and convert them into an array of words. For example,
+in our dataset we might want to convert the Description field into a list of tokens.
+// in Scala
+import org.apache.spark.ml.feature.Tokenizer
+val tkn = new Tokenizer().setInputCol("Description").setOutputCol("DescOut")
+val tokenized = tkn.transform(sales.select("Description"))
+tokenized.show(false)
+# in Python
+from pyspark.ml.feature import Tokenizer
+tkn = Tokenizer().setInputCol("Description").setOutputCol("DescOut")
+tokenized = tkn.transform(sales.select("Description"))
+tokenized.show(20, False)
++-----------------------------------+------------------------------------------+
+|Description DescOut |
++-----------------------------------+------------------------------------------+
+|RABBIT NIGHT LIGHT |[rabbit, night, light] |
+|DOUGHNUT LIP GLOSS |[doughnut, lip, gloss] |
+...
+|AIRLINE BAG VINTAGE WORLD CHAMPION |[airline, bag, vintage, world, champion] |
+|AIRLINE BAG VINTAGE JET SET BROWN |[airline, bag, vintage, jet, set, brown] |
++-----------------------------------+------------------------------------------+
+We can also create a Tokenizer that is not just based white space but a regular expression with
+the RegexTokenizer. The format of the regular expression should conform to the Java Regular
+Expression (RegEx) syntax:
+// in Scala
+import org.apache.spark.ml.feature.RegexTokenizer
+val rt = new RegexTokenizer()
+.setInputCol("Description")
+.setOutputCol("DescOut")
+.setPattern(" ") // simplest expression
+.setToLowercase(true)
+rt.transform(sales.select("Description")).show(false)
+# in Python
+from pyspark.ml.feature import RegexTokenizer
+rt = RegexTokenizer()\
+.setInputCol("Description")\
+.setOutputCol("DescOut")\
+.setPattern(" ")\
+.setToLowercase(True)
+rt.transform(sales.select("Description")).show(20, False)
++-----------------------------------+------------------------------------------+
+|Description DescOut |
++-----------------------------------+------------------------------------------+
+|RABBIT NIGHT LIGHT |[rabbit, night, light] |
+|DOUGHNUT LIP GLOSS |[doughnut, lip, gloss] |
+...
+|AIRLINE BAG VINTAGE WORLD CHAMPION |[airline, bag, vintage, world, champion] |
+|AIRLINE BAG VINTAGE JET SET BROWN |[airline, bag, vintage, jet, set, brown] |
++-----------------------------------+------------------------------------------+
+Another way of using the RegexTokenizer is to use it to output values matching the provided
+pattern instead of using it as a gap. We do this by setting the gaps parameter to false. Doing this
+with a space as a pattern returns all the spaces, which is not too useful, but if we made our
+pattern capture individual words, we could return those:
+// in Scala
+import org.apache.spark.ml.feature.RegexTokenizer
+val rt = new RegexTokenizer()
+.setInputCol("Description")
+.setOutputCol("DescOut")
+.setPattern(" ")
+.setGaps(false)
+.setToLowercase(true)
+rt.transform(sales.select("Description")).show(false)
+# in Python
+from pyspark.ml.feature import RegexTokenizer
+rt = RegexTokenizer()\
+.setInputCol("Description")\
+.setOutputCol("DescOut")\
+.setPattern(" ")\
+.setGaps(False)\
+.setToLowercase(True)
+rt.transform(sales.select("Description")).show(20, False)
++-----------------------------------+------------------+
+|Description DescOut |
++-----------------------------------+------------------+
+|RABBIT NIGHT LIGHT |[ , ] |
+|DOUGHNUT LIP GLOSS |[ , , ] |
+...
+|AIRLINE BAG VINTAGE WORLD CHAMPION |[ , , , , ] |
+|AIRLINE BAG VINTAGE JET SET BROWN |[ , , , , ] |
++-----------------------------------+------------------+
+Removing Common Words
+A common task after tokenization is to filter stop words, common words that are not relevant in
+many kinds of analysis and should thus be removed. Frequently occurring stop words in English
+include “the,” “and,” and “but.” Spark contains a list of default stop words you can see by calling
+the following method, which can be made case insensitive if necessary (as of Spark 2.2,
+supported languages for stopwords are “danish,” “dutch,” “english,” “finnish,” “french,”
+“german,” “hungarian,” “italian,” “norwegian,” “portuguese,” “russian,” “spanish,” “swedish,”
+and “turkish”):
+// in Scala
+import org.apache.spark.ml.feature.StopWordsRemover
+val englishStopWords = StopWordsRemover.loadDefaultStopWords("english")
+val stops = new StopWordsRemover()
+.setStopWords(englishStopWords)
+.setInputCol("DescOut")
+stops.transform(tokenized).show()
+# in Python
+from pyspark.ml.feature import StopWordsRemover
+englishStopWords = StopWordsRemover.loadDefaultStopWords("english")
+stops = StopWordsRemover()\
+.setStopWords(englishStopWords)\
+.setInputCol("DescOut")
+stops.transform(tokenized).show()
+The following output shows how this works:
++--------------------+--------------------+------------------------------------+
+| Description| DescOut|StopWordsRemover_4ab18...6ed__output|
++--------------------+--------------------+------------------------------------+
+...
+|SET OF 4 KNICK KN...|[set, of, 4, knic...| [set, 4, knick, k...|
+...
++--------------------+--------------------+------------------------------------+
+Notice how the word of is removed in the output column. That’s because it’s such a common
+word that it isn’t relevant to any downstream manipulation and simply adds noise to our dataset.
+Creating Word Combinations
+Tokenizing our strings and filtering stop words leaves us with a clean set of words to use as
+features. It is often of interest to look at combinations of words, usually by looking at colocated
+words. Word combinations are technically referred to as n-grams—that is, sequences of words of
+length n. An n-gram of length 1 is called a unigrams; those of length 2 are called bigrams, and
+those of length 3 are called trigrams (anything above those are just four-gram, five-gram, etc.),
+Order matters with n-gram creation, so converting a sentence with three words into bigram
+representation would result in two bigrams. The goal when creating n-grams is to better capture
+sentence structure and more information than can be gleaned by simply looking at all words
+individually. Let’s create some n-grams to illustrate this concept.
+The bigrams of “Big Data Processing Made Simple” are:
+“Big Data”
+“Data Processing”
+“Processing Made”
+“Made Simple”
+While the trigrams are:
+“Big Data Processing”
+“Data Processing Made”
+“Procesing Made Simple”
+With n-grams, we can look at sequences of words that commonly co-occur and use them as
+inputs to a machine learning algorithm. These can create better features than simply looking at
+all of the words individually (say, tokenized on a space character):
+// in Scala
+import org.apache.spark.ml.feature.NGram
+val unigram = new NGram().setInputCol("DescOut").setN(1)
+val bigram = new NGram().setInputCol("DescOut").setN(2)
+unigram.transform(tokenized.select("DescOut")).show(false)
+bigram.transform(tokenized.select("DescOut")).show(false)
+# in Python
+from pyspark.ml.feature import NGram
+unigram = NGram().setInputCol("DescOut").setN(1)
+bigram = NGram().setInputCol("DescOut").setN(2)
+unigram.transform(tokenized.select("DescOut")).show(False)
+bigram.transform(tokenized.select("DescOut")).show(False)
++-----------------------------------------+-------------------------------------
+DescOut |ngram_104c4da6a01b__output ...
++-----------------------------------------+-------------------------------------
+|[rabbit, night, light] |[rabbit, night, light] ...
+|[doughnut, lip, gloss] |[doughnut, lip, gloss] ...
+...
+|[airline, bag, vintage, world, champion] |[airline, bag, vintage, world, cha...
+|[airline, bag, vintage, jet, set, brown] |[airline, bag, vintage, jet, set, ...
++-----------------------------------------+-------------------------------------
+And the result for bigrams:
++------------------------------------------+------------------------------------
+DescOut |ngram_6e68fb3a642a__output ...
++------------------------------------------+------------------------------------
+|[rabbit, night, light] |[rabbit night, night light] ...
+|[doughnut, lip, gloss] |[doughnut lip, lip gloss] ...
+...
+|[airline, bag, vintage, world, champion] |[airline bag, bag vintage, vintag...
+|[airline, bag, vintage, jet, set, brown] |[airline bag, bag vintage, vintag...
++------------------------------------------+------------------------------------
+Converting Words into Numerical Representations
+Once you have word features, it’s time to start counting instances of words and word
+combinations for use in our models. The simplest way is just to include binary counts of a word
+in a given document (in our case, a row). Essentially, we’re measuring whether or not each row
+contains a given word. This is a simple way to normalize for document sizes and occurrence
+counts and get numerical features that allow us to classify documents based on content. In
+addition, we can count words using a CountVectorizer, or reweigh them according to the
+prevalence of a given word in all the documents using a TF–IDF transformation (discussed next).
+A CountVectorizer operates on our tokenized data and does two things:
+1. During the fit process, it finds the set of words in all the documents and then counts
+the occurrences of those words in those documents.
+2. It then counts the occurrences of a given word in each row of the DataFrame column
+during the transformation process and outputs a vector with the terms that occur in that
+row.
+Conceptually this tranformer treats every row as a document and every word as a term and the
+total collection of all terms as the vocabulary. These are all tunable parameters, meaning we can
+set the minimum term frequency (minTF) for the term to be included in the vocabulary
+(effectively removing rare words from the vocabulary); minimum number of documents a term
+must appear in (minDF) before being included in the vocabulary (another way to remove rare
+words from the vocabulary); and finally, the total maximum vocabulary size (vocabSize).
+Lastly, by default the CountVectorizer will output the counts of a term in a document. To just
+return whether or not a word exists in a document, we can use setBinary(true). Here’s an
+example of using CountVectorizer:
+// in Scala
+import org.apache.spark.ml.feature.CountVectorizer
+val cv = new CountVectorizer()
+.setInputCol("DescOut")
+.setOutputCol("countVec")
+.setVocabSize(500)
+.setMinTF(1)
+.setMinDF(2)
+val fittedCV = cv.fit(tokenized)
+fittedCV.transform(tokenized).show(false)
+# in Python
+from pyspark.ml.feature import CountVectorizer
+cv = CountVectorizer()\
+.setInputCol("DescOut")\
+.setOutputCol("countVec")\
+.setVocabSize(500)\
+.setMinTF(1)\
+.setMinDF(2)
+fittedCV = cv.fit(tokenized)
+fittedCV.transform(tokenized).show(False)
+While the output looks a little complicated, it’s actually just a sparse vector that contains the total
+vocabulary size, the index of the word in the vocabulary, and then the counts of that particular
+word:
++---------------------------------+--------------------------------------------+
+DescOut |countVec |
++---------------------------------+--------------------------------------------+
+|[rabbit, night, light] |(500,[150,185,212],[1.0,1.0,1.0]) |
+|[doughnut, lip, gloss] |(500,[462,463,492],[1.0,1.0,1.0]) |
+...
+|[airline, bag, vintage, world,...|(500,[2,6,328],[1.0,1.0,1.0]) |
+|[airline, bag, vintage, jet, s...|(500,[0,2,6,328,405],[1.0,1.0,1.0,1.0,1.0]) |
++---------------------------------+--------------------------------------------+
+Term frequency–inverse document frequency
+Another way to approach the problem of converting text into a numerical representation is to use
+term frequency–inverse document frequency (TF–IDF). In simplest terms, TF–IDF measures
+how often a word occurs in each document, weighted according to how many documents that
+word occurs in. The result is that words that occur in a few documents are given more weight
+than words that occur in many documents. In practice, a word like “the” would be weighted very
+low because of its prevalence while a more specialized word like “streaming” would occur in
+fewer documents and thus would be weighted higher. In a way, TF–IDF helps find documents
+that share similar topics. Let’s take a look at an example—first, we’ll inspect some of the
+documents in our data containing the word “red”:
+// in Scala
+val tfIdfIn = tokenized
+.where("array_contains(DescOut, 'red')")
+.select("DescOut")
+.limit(10)
+tfIdfIn.show(false)
+# in Python
+tfIdfIn = tokenized\
+.where("array_contains(DescOut, 'red')")\
+.select("DescOut")\
+.limit(10)
+tfIdfIn.show(10, False)
++---------------------------------------+
+DescOut |
++---------------------------------------+
+|[gingham, heart, , doorstop, red] |
+...
+|[red, retrospot, oven, glove] |
+|[red, retrospot, plate] |
++---------------------------------------+
+We can see some overlapping words in these documents, but these words provide at least a rough
+topic-like representation. Now let’s input that into TF–IDF. To do this, we’re going to hash each
+word and convert it to a numerical representation, and then weigh each word in the voculary
+according to the inverse document frequency. Hashing is a similar process as CountVectorizer,
+but is irreversible—that is, from our output index for a word, we cannot get our input word
+(multiple words might map to the same output index):
+// in Scala
+import org.apache.spark.ml.feature.{HashingTF, IDF}
+val tf = new HashingTF()
+.setInputCol("DescOut")
+.setOutputCol("TFOut")
+.setNumFeatures(10000)
+val idf = new IDF()
+.setInputCol("TFOut")
+.setOutputCol("IDFOut")
+.setMinDocFreq(2)
+# in Python
+from pyspark.ml.feature import HashingTF, IDF
+tf = HashingTF()\
+.setInputCol("DescOut")\
+.setOutputCol("TFOut")\
+.setNumFeatures(10000)
+idf = IDF()\
+.setInputCol("TFOut")\
+.setOutputCol("IDFOut")\
+.setMinDocFreq(2)
+// in Scala
+idf.fit(tf.transform(tfIdfIn)).transform(tf.transform(tfIdfIn)).show(false)
+# in Python
+idf.fit(tf.transform(tfIdfIn)).transform(tf.transform(tfIdfIn)).show(10, False)
+While the output is too large to include here, notice that a certain value is assigned to “red” and
+that this value appears in every document. Also note that this term is weighted extremely low
+because it appears in every document. The output format is a sparse Vector we can subsequently
+input into a machine learning model in a form like this:
+(10000,[2591,4291,4456],[1.0116009116784799,0.0,0.0])
+This vector is represented using three different values: the total vocabulary size, the hash of
+every word appearing in the document, and the weighting of each of those terms. This is similar
+to the CountVectorizer output.
+Word2Vec
+Word2Vec is a deep learning–based tool for computing a vector representation of a set of words.
+The goal is to have similar words close to one another in this vector space, so we can then make
+generalizations about the words themselves. This model is easy to train and use, and has been
+shown to be useful in a number of natural language processing applications, including entity
+recognition, disambiguation, parsing, tagging, and machine translation.
+Word2Vec is notable for capturing relationships between words based on their semantics. For
+example, if v~king, v~queen, v~man, and v~women represent the vectors for those four words,
+then we will often get a representation where v~king − v~man + v~woman ~= v~queen. To do
+this, Word2Vec uses a technique called “skip-grams” to convert a sentence of words into a
+vector representation (optionally of a specific size). It does this by building a vocabulary, and
+then for every sentence, it removes a token and trains the model to predict the missing token in
+the "n-gram” representation. Word2Vec works best with continuous, free-form text in the form
+of tokens.
+Here’s a simple example from the documentation:
+// in Scala
+import org.apache.spark.ml.feature.Word2Vec
+import org.apache.spark.ml.linalg.Vector
+import org.apache.spark.sql.Row
+// Input data: Each row is a bag of words from a sentence or document.
+val documentDF = spark.createDataFrame(Seq(
+"Hi I heard about Spark".split(" "),
+"I wish Java could use case classes".split(" "),
+"Logistic regression models are neat".split(" ")
+).map(Tuple1.apply)).toDF("text")
+// Learn a mapping from words to Vectors.
+val word2Vec = new Word2Vec()
+.setInputCol("text")
+.setOutputCol("result")
+.setVectorSize(3)
+.setMinCount(0)
+val model = word2Vec.fit(documentDF)
+val result = model.transform(documentDF)
+result.collect().foreach { case Row(text: Seq[_], features: Vector) =>
+println(s"Text: [${text.mkString(", ")}] => \nVector: $features\n")
+}
+# in Python
+from pyspark.ml.feature import Word2Vec
+# Input data: Each row is a bag of words from a sentence or document.
+documentDF = spark.createDataFrame([
+("Hi I heard about Spark".split(" "), ),
+("I wish Java could use case classes".split(" "), ),
+("Logistic regression models are neat".split(" "), )
+], ["text"])
+# Learn a mapping from words to Vectors.
+word2Vec = Word2Vec(vectorSize=3, minCount=0, inputCol="text",
+outputCol="result")
+model = word2Vec.fit(documentDF)
+result = model.transform(documentDF)
+for row in result.collect():
+text, vector = row
+print("Text: [%s] => \nVector: %s\n" % (", ".join(text), str(vector)))
+Text: [Hi, I, heard, about, Spark] =>
+Vector: [-0.008142343163490296,0.02051363289356232,0.03255096450448036]
+Text: [I, wish, Java, could, use, case, classes] =>
+Vector: [0.043090314205203734,0.035048123182994974,0.023512658663094044]
+Text: [Logistic, regression, models, are, neat] =>
+Vector: [0.038572299480438235,-0.03250147425569594,-0.01552378609776497]
+Spark’s Word2Vec implementation includes a variety of tuning parameters that can be found in
+the documentation.
+Feature Manipulation
+While nearly every transformer in ML manipulates the feature space in some way, the following
+algorithms and tools are automated means of either expanding the input feature vectors or
+reducing them to a lower number of dimensions.
+PCA
+Principal Components Analysis (PCA) is a mathematical technique for finding the most
+important aspects of our data (the principal components). It changes the feature representation of
+our data by creating a new set of features (“aspects”). Each new feature is a combination of the
+original features. The power of PCA is that it can create a smaller set of more meaningful
+features to be input into your model, at the potential cost of interpretability.
+You’d want to use PCA if you have a large input dataset and want to reduce the total number of
+features you have. This frequently comes up in text analysis where the entire feature space is
+massive and many of the features are largely irrelevant. Using PCA, we can find the most
+important combinations of features and only include those in our machine learning model. PCA
+takes a parameter ὅ, specifying the number of output features to create. Generally, this should be
+much smaller than your input vectors’ dimension.
+NOTE
+Picking the right ὅ is nontrivial and there’s no prescription we can give. Check out the relevant
+chapters in ESL and ISL for more information.
+Let’s train PCA with a ὅ of 2:
+// in Scala
+import org.apache.spark.ml.feature.PCA
+val pca = new PCA().setInputCol("features").setK(2)
+pca.fit(scaleDF).transform(scaleDF).show(false)
+# in Python
+from pyspark.ml.feature import PCA
+pca = PCA().setInputCol("features").setK(2)
+pca.fit(scaleDF).transform(scaleDF).show(20, False)
++---+--------------+------------------------------------------+
+|id |features |pca_7c5c4aa7674e__output |
++---+--------------+------------------------------------------+
+|0 |[1.0,0.1,-1.0]|[0.0713719499248418,-0.4526654888147822] |
+...
+|1 |[3.0,10.1,3.0]|[-10.872398139848944,0.030962697060150646]|
++---+--------------+------------------------------------------+
+Interaction
+In some cases, you might have domain knowledge about specific variables in your dataset. For
+example, you might know that a certain interaction between the two variables is an important
+variable to include in a downstream estimator. The feature transformer Interaction allows you
+to create an interaction between two variables manually. It just multiplies the two features
+together—something that a typical linear model would not do for every possible pair of features
+in your data. This transformer is currently only available directly in Scala but can be called from
+any language using the RFormula. We recommend users just use RFormula instead of manually
+creating interactions.
+Polynomial Expansion
+Polynomial expansion is used to generate interaction variables of all the input columns. With
+polynomial expansion, we specify to what degree we would like to see various interactions. For
+example, for a degree-2 polynomial, Spark takes every value in our feature vector, multiplies it
+by every other value in the feature vector, and then stores the results as features. For instance, if
+we have two input features, we’ll get four output features if we use a second degree polynomial
+(2x2). If we have three input features, we’ll get nine output features (3x3). If we use a thirddegree polynomial, we’ll get 27 output features (3x3x3) and so on. This transformation is useful
+when you want to see interactions between particular features but aren’t necessarily sure about
+which interactions to consider.
+WARNING
+Polynomial expansion can greatly increase your feature space, leading to both high computational
+costs and overfitting. Use it with caution, especially for higher degrees.
+Here’s an example of a second degree polynomial:
+// in Scala
+import org.apache.spark.ml.feature.PolynomialExpansion
+val pe = new PolynomialExpansion().setInputCol("features").setDegree(2)
+pe.transform(scaleDF).show(false)
+# in Python
+from pyspark.ml.feature import PolynomialExpansion
+pe = PolynomialExpansion().setInputCol("features").setDegree(2)
+pe.transform(scaleDF).show()
++---+--------------+-----------------------------------------------------------+
+|id |features |poly_9b2e603812cb__output |
++---+--------------+-----------------------------------------------------------+
+|0 |[1.0,0.1,-1.0]|[1.0,1.0,0.1,0.1,0.010000000000000002,-1.0,-1.0,-0.1,1.0] |
+...
+|1 |[3.0,10.1,3.0]|[3.0,9.0,10.1,30.299999999999997,102.00999999999999,3.0... |
++---+--------------+-----------------------------------------------------------+
+Feature Selection
+Often, you will have a large range of possible features and want to select a smaller subset to use
+for training. For example, many features might be correlated, or using too many features might
+lead to overfitting. This process is called feature selection. There are a number of ways to
+evaluate feature importance once you’ve trained a model but another option is to do some rough
+filtering beforehand. Spark has some simple options for doing that, such as ChiSqSelector.
+ChiSqSelector
+ChiSqSelector leverages a statistical test to identify features that are not independent from the
+label we are trying to predict, and drop the uncorrelated features. It’s often used with categorical
+data in order to reduce the number of features you will input into your model, as well as to
+reduce the dimensionality of text data (in the form of frequencies or counts). Since this method is
+based on the Chi-Square test, there are several different ways we can pick the “best” features.
+The methods are numTopFeatures, which is ordered by p-value; percentile, which takes a
+proportion of the input features (instead of just the top N features); and fpr, which sets a cut off
+p-value.
+We will demonstrate this with the output of the CountVectorizer created earlier in this chapter:
+// in Scala
+import org.apache.spark.ml.feature.{ChiSqSelector, Tokenizer}
+val tkn = new Tokenizer().setInputCol("Description").setOutputCol("DescOut")
+val tokenized = tkn
+.transform(sales.select("Description", "CustomerId"))
+.where("CustomerId IS NOT NULL")
+val prechi = fittedCV.transform(tokenized)
+val chisq = new ChiSqSelector()
+.setFeaturesCol("countVec")
+.setLabelCol("CustomerId")
+.setNumTopFeatures(2)
+chisq.fit(prechi).transform(prechi)
+.drop("customerId", "Description", "DescOut").show()
+# in Python
+from pyspark.ml.feature import ChiSqSelector, Tokenizer
+tkn = Tokenizer().setInputCol("Description").setOutputCol("DescOut")
+tokenized = tkn\
+.transform(sales.select("Description", "CustomerId"))

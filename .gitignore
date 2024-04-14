@@ -1,0 +1,3 @@
+*.metals
+*.vscode
+*/.ipynb_checkpoints/PageRankDemoScala-checkpoint.ipynb

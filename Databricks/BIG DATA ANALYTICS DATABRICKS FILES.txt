@@ -1,0 +1,169 @@
+BIG DATA ANALYTICS DATABRICKS FILES
+
+Exam Practice 1
+
+https://databricks-prod-cloudfront.cloud.databricks.com/public/4027ec902e239c93eaaa8714f173bcfc/3999674683425695/262217316766728/2489209761483477/latest.html
+
+Lab 1
+
+https://databricks-prod-cloudfront.cloud.databricks.com/public/4027ec902e239c93eaaa8714f173bcfc/3999674683425695/1779269652463667/2489209761483477/latest.html
+
+Lab 2
+
+https://databricks-prod-cloudfront.cloud.databricks.com/public/4027ec902e239c93eaaa8714f173bcfc/3999674683425695/781030789741772/2489209761483477/latest.html
+
+Lab 3
+
+https://databricks-prod-cloudfront.cloud.databricks.com/public/4027ec902e239c93eaaa8714f173bcfc/3999674683425695/781030789741851/2489209761483477/latest.html
+
+Lab 4 - Transformations
+
+https://databricks-prod-cloudfront.cloud.databricks.com/public/4027ec902e239c93eaaa8714f173bcfc/3999674683425695/3289134686375614/2489209761483477/latest.html
+
+Lab 5 - Soark SQL
+
+https://databricks-prod-cloudfront.cloud.databricks.com/public/4027ec902e239c93eaaa8714f173bcfc/3999674683425695/573613022675190/2489209761483477/latest.html
+
+Lab 5 - Spark SQL
+
+https://databricks-prod-cloudfront.cloud.databricks.com/public/4027ec902e239c93eaaa8714f173bcfc/3999674683425695/573613022675235/2489209761483477/latest.html
+
+Lab 6 - Spark SQL
+
+https://databricks-prod-cloudfront.cloud.databricks.com/public/4027ec902e239c93eaaa8714f173bcfc/3999674683425695/4193123740563170/2489209761483477/latest.html
+
+JOINs - DataFrames
+
+https://databricks-prod-cloudfront.cloud.databricks.com/public/4027ec902e239c93eaaa8714f173bcfc/3999674683425695/2410467280813256/2489209761483477/latest.html
+
+Lab 6 - Feature Extraction
+
+https://databricks-prod-cloudfront.cloud.databricks.com/public/4027ec902e239c93eaaa8714f173bcfc/3999674683425695/4193123740563253/2489209761483477/latest.html
+
+Lab 7 - Feature Extraction
+
+https://databricks-prod-cloudfront.cloud.databricks.com/public/4027ec902e239c93eaaa8714f173bcfc/3999674683425695/3360595914831374/2489209761483477/latest.html
+
+Lab 7 - Coin Change
+
+https://databricks-prod-cloudfront.cloud.databricks.com/public/4027ec902e239c93eaaa8714f173bcfc/3999674683425695/2698391064142225/2489209761483477/latest.html
+
+Lab 7 - For Each
+
+https://databricks-prod-cloudfront.cloud.databricks.com/public/4027ec902e239c93eaaa8714f173bcfc/3999674683425695/2698391064142239/2489209761483477/latest.html
+
+Exam Practice 2 - Graph
+
+https://databricks-prod-cloudfront.cloud.databricks.com/public/4027ec902e239c93eaaa8714f173bcfc/3999674683425695/250952801005621/2489209761483477/latest.html
+
+Lab 8 - Graph
+
+https://databricks-prod-cloudfront.cloud.databricks.com/public/4027ec902e239c93eaaa8714f173bcfc/3999674683425695/2206904863362323/2489209761483477/latest.html
+
+Lab 8 - NetworkX [NO USE]
+
+https://databricks-prod-cloudfront.cloud.databricks.com/public/4027ec902e239c93eaaa8714f173bcfc/3999674683425695/2206904863362364/2489209761483477/latest.html
+
+Lab 9 - NetworkX
+
+https://databricks-prod-cloudfront.cloud.databricks.com/public/4027ec902e239c93eaaa8714f173bcfc/3999674683425695/839121643487743/2489209761483477/latest.html
+
+Lab 9 - Page Rank Scala
+
+https://databricks-prod-cloudfront.cloud.databricks.com/public/4027ec902e239c93eaaa8714f173bcfc/3999674683425695/839121643487807/2489209761483477/latest.html
+
+Lab 9 - Page Rank Python
+
+https://databricks-prod-cloudfront.cloud.databricks.com/public/4027ec902e239c93eaaa8714f173bcfc/3999674683425695/839121643487829/2489209761483477/latest.html
+
+Lab 10 - Linear Regression Pyspark
+
+https://databricks-prod-cloudfront.cloud.databricks.com/public/4027ec902e239c93eaaa8714f173bcfc/3999674683425695/1513497583188174/2489209761483477/latest.html
+
+Lab 10 - Linear Regression Python
+
+https://databricks-prod-cloudfront.cloud.databricks.com/public/4027ec902e239c93eaaa8714f173bcfc/3999674683425695/974280624324888/2489209761483477/latest.html
+
+Lab 10 - Random Forest
+
+https://databricks-prod-cloudfront.cloud.databricks.com/public/4027ec902e239c93eaaa8714f173bcfc/3999674683425695/974280624324902/2489209761483477/latest.html
+
+NLP - Logistic Regression
+
+https://databricks-prod-cloudfront.cloud.databricks.com/public/4027ec902e239c93eaaa8714f173bcfc/3999674683425695/1845459934243187/2489209761483477/latest.html
+
+Lab 11 - Streaming
+
+https://databricks-prod-cloudfront.cloud.databricks.com/public/4027ec902e239c93eaaa8714f173bcfc/3999674683425695/3719709944455713/2489209761483477/latest.html
+
+IA 1
+
+https://databricks-prod-cloudfront.cloud.databricks.com/public/4027ec902e239c93eaaa8714f173bcfc/3999674683425695/3952862224164038/2489209761483477/latest.html
+
+Exam - Slot 1
+
+ML
+
+https://databricks-prod-cloudfront.cloud.databricks.com/public/4027ec902e239c93eaaa8714f173bcfc/3999674683425695/4476367711585171/2489209761483477/latest.html
+
+SQL
+
+https://databricks-prod-cloudfront.cloud.databricks.com/public/4027ec902e239c93eaaa8714f173bcfc/3999674683425695/4476367711585219/2489209761483477/latest.html
+
+NetworkX
+
+graph = nx.DiGraph()
+nodes = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I']
+edges = [
+    ('A', 'B'), ('B', 'C'), ('C', 'D'), ('D', 'E'), ('E', 'F'),
+    ('F', 'G'), ('G', 'H'), ('H', 'I'), ('I', 'A'), ('A', 'C'),
+    ('C', 'E'), ('E', 'G')
+]
+graph.add_nodes_from(nodes)
+graph.add_edges_from(edges)
+nx.draw_networkx(graph)
+nx.in_degree_centrality(graph)
+nx.out_degree_centrality(graph)
+nx.shortest_path(graph,'A')
+list(nx.strongly_connected_components(graph))
+
+nx.density(graph)
+
+degree_sequence = [d for _,d in nx.degree(graph)]
+plt.hist(degree_sequence, bins=range(1, max(degree_sequence) + 2))
+plt.show()
+nx.average_shortest_path_length(graph)
+
+
+
+
+
+
+Pyspark Join types and data frames: 
+https://databricks-prod-cloudfront.cloud.databricks.com/public/4027ec902e239c93eaaa8714f173bcfc/4477179913502644/2220320311588046/8777538160109253/latest.html
+
+
+Random_Forests: 
+https://databricks-prod-cloudfront.cloud.databricks.com/public/4027ec902e239c93eaaa8714f173bcfc/4477179913502644/737517930004685/8777538160109253/latest.html
+
+
+page-rank-en: 
+https://databricks-prod-cloudfront.cloud.databricks.com/public/4027ec902e239c93eaaa8714f173bcfc/4477179913502644/981959533687754/8777538160109253/latest.html
+
+
+NLP_PySpark: 
+https://databricks-prod-cloudfront.cloud.databricks.com/public/4027ec902e239c93eaaa8714f173bcfc/4477179913502644/4054786112145272/8777538160109253/latest.html
+
+
+Linear Regression using CSV: 
+https://databricks-prod-cloudfront.cloud.databricks.com/public/4027ec902e239c93eaaa8714f173bcfc/4477179913502644/1318017803361161/8777538160109253/latest.html
+
+
+Linear_Regression: 
+https://databricks-prod-cloudfront.cloud.databricks.com/public/4027ec902e239c93eaaa8714f173bcfc/4477179913502644/1074100517957379/8777538160109253/latest.html
+
+
+Graph Demo: 
+https://databricks-prod-cloudfront.cloud.databricks.com/public/4027ec902e239c93eaaa8714f173bcfc/4477179913502644/717730831504126/8777538160109253/latest.html
+
+
